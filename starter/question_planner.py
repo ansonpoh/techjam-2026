@@ -33,10 +33,7 @@ FACET_PATTERNS = {
     ),
 }
 
-# Information gain is only useful when the customer is likely to have the
-# requested detail. Product features, material, color, and price are common in
-# shopping intent; catalog taxonomy and merchant names are much less likely to
-# be meaningful customer preferences.
+# Additional Information for agent to filter by.
 ANSWERABILITY_PRIORS = {
     "feature": 1.00,
     "material": 0.95,
@@ -82,9 +79,7 @@ class AdaptiveQuestionPlanner:
         if turn >= 10 or not candidates:
             return None, "These are my best matches based on everything you've shared."
 
-        # Early in an uncertain search, a broad must-have question has the
-        # highest chance of eliciting one of the customer's actual constraints.
-        # Cap it to avoid repetition and honor an explicit no-preference reply.
+        # Cap to avoid repetition and honor an explicit no-preference reply.
         if (
             turn <= 3
             and "other" not in state.no_preference_attributes
