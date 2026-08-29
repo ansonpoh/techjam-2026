@@ -46,7 +46,7 @@ HARD_CONSTRAINT_AND_ROUTE_WEIGHT = 3.0
 
 # FTS5 column order: parent_asin, title, categories, features, details, store,
 # description, price, average_rating, rating_number.
-BM25_COLUMN_WEIGHTS = (0.0, 4.0, 4.0, 7.0, 7.0, 1.0, 1.0, 0.0, 0.0, 0.0)
+BM25_COLUMN_WEIGHTS = (0.0, 7.0, 4.5, 3.2, 3.2, 1.8, 1.2, 0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True)
