@@ -57,9 +57,11 @@ class SessionState:
             return
 
         if OVERRIDE_RE.search(message):
-            # The opening preference is superseded. Explicit clarification
-            # answers remain valid unless the customer replaces them by name.
-            self.evidence = [item for item in self.evidence if item.source != "initial_preference"]
+            # Clear initial_preference evidence on override
+            self.evidence = [
+                item for item in self.evidence
+                if item.source != "initial_preference"
+            ]
 
         category_match = LOOKING_FOR_RE.search(message)
         if category_match and not self.category_text:
@@ -70,7 +72,7 @@ class SessionState:
         match = NEED_RE.search(message)
         if match:
             for value in _split_constraints(match.group(1)):
-                self._add(value, 4.5, "override", turn)
+                self._add(value, 6.0, "override", turn)  # Boosted weight for faster recovery
             return
 
         match = REQUIREMENT_RE.search(message)

@@ -1,0 +1,9 @@
+{
+  "model": "text-embedding-3-small",
+  "dimensions": 256,
+  "row_count": 50000,
+  "catalog_sha256": "da979b05a68af864cb0dcf9ee6a81c010c7e66a57978ad286c7a2e005fc69a67",
+  "normalized": true,
+  "prompt_tokens": 12710263,
+  "created_at": "2026-08-29T08:37:44.951469+00:00"
+}

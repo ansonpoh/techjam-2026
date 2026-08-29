@@ -67,7 +67,7 @@ def _or_expression(values: list[str], limit: int = 48) -> str:
 def _phrase_expression(evidence: list[Evidence], limit: int = 4) -> str:
     chunks = sorted(
         (item for item in evidence if item.source != "category" and terms(item.text)),
-        key=lambda item: (len(set(terms(item.text))), item.weight, item.turn),
+        key=lambda item: (item.turn, item.weight, len(set(terms(item.text)))),  # Prioritize recent
         reverse=True,
     )
     phrases: list[str] = []
