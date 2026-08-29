@@ -2,9 +2,12 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from starter.config import AgentConfig, DEFAULT_AGENT_CONFIG
 from starter.dialogue import SessionState
 from starter.question_planner import AdaptiveQuestionPlanner
-from starter.retrieval import CatalogSearch
+from starter.ranking import DEFAULT_RANKING_POLICIES, RankingPolicies
+from starter.retrieval import FEATURE_CACHE_SIZE, CatalogSearch
+from starter.vector_index import VectorIndex
 from starter.llm_extractor import LLMSlotExtractor, StateMachineWithLLM
 
 # Regex fallback for override detection
@@ -19,12 +22,24 @@ class Agent:
     def __init__(
         self,
         catalog_path: str | Path = "data/catalog.jsonl",
+        feature_cache_size: int = FEATURE_CACHE_SIZE,
+        *,
+        config: AgentConfig = DEFAULT_AGENT_CONFIG,
+        ranking_policies: RankingPolicies = DEFAULT_RANKING_POLICIES,
+        vector_index: VectorIndex | None = None,
         llm_provider: str = "auto",
         llm_model: Optional[str] = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
-        self.search = CatalogSearch(self.catalog_path)
-        self.question_planner = AdaptiveQuestionPlanner()
+        self.config = config
+        self.search = CatalogSearch(
+            self.catalog_path,
+            feature_cache_size=feature_cache_size,
+            enable_vector_reranker=config.enable_vector_reranker,
+            ranking_policies=ranking_policies,
+            vector_index=vector_index,
+        )
+        self.question_planner = AdaptiveQuestionPlanner(self.search.feature_store)
 
         # LLM-based slot extraction
         self._extractor = LLMSlotExtractor(provider=llm_provider, model=llm_model)
@@ -32,6 +47,9 @@ class Agent:
         # State tracking
         self._sessions: dict[str, SessionState] = {}  # Legacy (for search compatibility)
         self._llm_states: dict[str, StateMachineWithLLM] = {}  # LLM-based slots
+
+    def close(self) -> None:
+        self.search.close()
 
     def reset(self, session_id: str, user_profile: dict) -> None:
         # Initialize legacy state (still needed for search)
@@ -88,10 +106,12 @@ class Agent:
             )
 
         # Calculate token usage
-        usage = llm_result.get("usage", {})
         total_usage = llm_state.total_usage
 
-        ranked = result.recommendations[:1] if turn == 1 else result.recommendations
+        recommendation_limit = self.config.recommendation_policy.limit_for(
+            turn, top_k
+        )
+        ranked = result.recommendations[:recommendation_limit]
         return {
             "message": message,
             "ask_attribute": ask_attribute,
@@ -100,7 +120,7 @@ class Agent:
                 for parent_asin, score in ranked
             ],
             "usage": {
-                "prompt_tokens": total_usage.get("prompt_tokens", 0),
+                "prompt_tokens": total_usage.get("prompt_tokens", 0) + result.prompt_tokens,
                 "completion_tokens": total_usage.get("completion_tokens", 0),
             },
         }

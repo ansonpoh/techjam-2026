@@ -2,16 +2,19 @@
   "agent": "stateful_adaptive_multi_route_offline",
   "dataset": "data/public_set.jsonl",
   "sample_count": 200,
-  "hit_rate_at_10": 0.995,
-  "mrr": 0.721635,
-  "mttc": 1.845,
-  "efficiency": 0.9155,
-  "technical_score": 0.897091,
+  "hit_rate_at_10": 0.99,
+  "mrr": 0.932181,
+  "mttc": 2.275,
+  "efficiency": 0.8725,
+  "technical_score": 0.949154,
   "development_benchmark": {
     "python": "3.13.5",
-    "index_build_seconds": 1.809,
-    "mean_turn_milliseconds": 162.837,
-    "full_evaluator_seconds": 62.0
+    "index_build_seconds": 3.89,
+    "mean_turn_milliseconds": 171.538,
+    "feature_cache_max_products": 5000,
+    "twenty_session_no_reuse_seconds": 12.654,
+    "twenty_session_cached_seconds": 9.22,
+    "twenty_session_speedup_percent": 27.1
   },
   "reported_token_usage": {
     "prompt_tokens": 0,
@@ -19,9 +22,9 @@
     "total_tokens": 0
   },
   "scenario_metrics": {
-    "boundary": {"sample_count": 10, "hit_rate_at_10": 1.0, "mrr": 0.9, "mttc": 2.2},
-    "browsing": {"sample_count": 80, "hit_rate_at_10": 1.0, "mrr": 0.624608, "mttc": 1.65},
-    "buying": {"sample_count": 80, "hit_rate_at_10": 0.9875, "mrr": 0.736563, "mttc": 1.325},
-    "intent_override": {"sample_count": 30, "hit_rate_at_10": 1.0, "mrr": 0.881111, "mttc": 3.633333}
+    "boundary": {"sample_count": 10, "hit_rate_at_10": 1.0, "mrr": 1.0, "mttc": 2.6},
+    "browsing": {"sample_count": 80, "hit_rate_at_10": 1.0, "mrr": 0.929583, "mttc": 2.1},
+    "buying": {"sample_count": 80, "hit_rate_at_10": 0.9875, "mrr": 0.927951, "mttc": 1.8},
+    "intent_override": {"sample_count": 30, "hit_rate_at_10": 0.966667, "mrr": 0.927778, "mttc": 3.9}
   }
 }
