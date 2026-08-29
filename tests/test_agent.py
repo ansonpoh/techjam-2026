@@ -9,6 +9,12 @@ from starter.agent import Agent
 from starter.dialogue import Evidence, SessionState
 from starter.product_features import FIELD_WEIGHTS, ProductFeatureStore, terms
 from starter.question_planner import AdaptiveQuestionPlanner
+from starter.ranking import (
+    DEFAULT_RANKING_POLICIES,
+    LEGACY_POLICY,
+    IntentRouter,
+    RankingMode,
+)
 from starter.retrieval import CatalogSearch, QUALITY_REVIEW_WEIGHT
 
 
@@ -90,6 +96,45 @@ class DialogueStateTest(unittest.TestCase):
         state.record_question("other")
         state.observe("I don't have a preference for other; please use your judgment.", 2)
         self.assertEqual([item.text.lower() for item in state.evidence], ["jackets"])
+
+
+class IntentRouterTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.router = IntentRouter()
+
+    def test_open_ended_session_stays_in_browsing_mode_as_preferences_accumulate(
+        self,
+    ) -> None:
+        state = SessionState(user_profile={})
+        state.observe("I'm looking for Shirts, but I'm still exploring.", 1)
+        state.record_question("material")
+        state.observe("For that, what matters is: breathable cotton.", 2)
+
+        decision = self.router.route(state)
+
+        self.assertEqual(decision.mode, RankingMode.BROWSING)
+        self.assertEqual(decision.reasons, ("open_ended_start",))
+
+    def test_explicit_requirement_routes_to_buying_without_scenario_labels(self) -> None:
+        state = SessionState(user_profile={})
+        state.observe(
+            "I'm looking for Shoes. A key requirement is: waterproof wide width.",
+            1,
+        )
+
+        decision = self.router.route(state)
+
+        self.assertEqual(decision.mode, RankingMode.BUYING)
+        self.assertIn("explicit_requirement", decision.reasons)
+
+    def test_open_session_can_transition_to_buying_after_explicit_override(self) -> None:
+        state = SessionState(user_profile={})
+        state.observe("I'm looking for Shoes, but I'm still exploring.", 1)
+        self.assertEqual(self.router.route(state).mode, RankingMode.BROWSING)
+
+        state.observe("Actually, what I need is: black leather.", 2)
+
+        self.assertEqual(self.router.route(state).mode, RankingMode.BUYING)
 
 
 class AdaptiveQuestionPlannerTest(unittest.TestCase):
@@ -288,6 +333,122 @@ class AgentRetrievalTest(unittest.TestCase):
             self._features(store, "far", price=120), query
         )
         self.assertGreater(close, far)
+
+    def test_buying_policy_penalizes_hard_constraint_contradictions(self) -> None:
+        store = ProductFeatureStore()
+        matching_raw = {
+            "parent_asin": "MATCH",
+            "title": "Black leather trail boot",
+            "features": "wide width waterproof",
+            "categories": "Shoes",
+            "details": "",
+            "store": "Example",
+            "description": "",
+        }
+        conflicting_raw = {
+            **matching_raw,
+            "parent_asin": "CONFLICT",
+            "title": "Red synthetic trail boot",
+        }
+        matching = store.add("MATCH", matching_raw)
+        conflicting = store.add("CONFLICT", conflicting_raw)
+        query = store.compile_query(
+            [Evidence("black leather", 3.8, "hard_constraint", 1)]
+        )
+        policy = DEFAULT_RANKING_POLICIES.buying
+
+        matching_score = CatalogSearch._constraint_fit_adjustment(
+            matching,
+            store.question_features(matching_raw),
+            query,
+            policy,
+        )
+        conflicting_score = CatalogSearch._constraint_fit_adjustment(
+            conflicting,
+            store.question_features(conflicting_raw),
+            query,
+            policy,
+        )
+
+        self.assertGreater(matching_score, 0.0)
+        self.assertLess(conflicting_score, 0.0)
+        self.assertGreater(matching_score, conflicting_score)
+
+    def test_legacy_policy_adds_no_mode_specific_adjustment(self) -> None:
+        store = ProductFeatureStore()
+        raw = {
+            "parent_asin": "A",
+            "title": "Red synthetic boot",
+            "features": "standard width",
+            "categories": "Shoes",
+            "details": "",
+            "store": "Example",
+            "description": "",
+        }
+        product = store.add("A", raw, price=120)
+        query = store.compile_query(
+            [
+                Evidence("black leather", 3.8, "hard_constraint", 1),
+                Evidence("under $50", 3.0, "clarification", 2),
+            ]
+        )
+
+        self.assertEqual(
+            CatalogSearch._constraint_fit_adjustment(
+                product,
+                store.question_features(raw),
+                query,
+                LEGACY_POLICY,
+            ),
+            0.0,
+        )
+        self.assertEqual(
+            CatalogSearch._budget_violation_adjustment(
+                product, query, LEGACY_POLICY
+            ),
+            0.0,
+        )
+
+    def test_buying_policy_penalizes_explicit_budget_violation(self) -> None:
+        store = ProductFeatureStore()
+        query = store.compile_query(
+            [Evidence("under $50", 3.0, "hard_constraint", 1)]
+        )
+        policy = DEFAULT_RANKING_POLICIES.buying
+        affordable = self._features(store, "affordable", price=45)
+        expensive = self._features(store, "expensive", price=100)
+
+        affordable_score = CatalogSearch._budget_violation_adjustment(
+            affordable, query, policy
+        )
+        expensive_score = CatalogSearch._budget_violation_adjustment(
+            expensive, query, policy
+        )
+
+        self.assertEqual(affordable_score, 0.0)
+        self.assertLess(expensive_score, affordable_score)
+
+    def test_search_result_reports_inferred_ranking_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = self._write_catalog(directory)
+            agent = Agent(catalog)
+            agent.reset("browse", {})
+            agent.respond(
+                "browse", "I'm looking for Shoes, but I'm still exploring.", 1, 10
+            )
+            browsing = agent.search.search_with_context(agent._sessions["browse"])
+
+            agent.reset("buy", {})
+            agent.respond(
+                "buy",
+                "I'm looking for Shoes. A key requirement is: wide width.",
+                1,
+                10,
+            )
+            buying = agent.search.search_with_context(agent._sessions["buy"])
+
+            self.assertEqual(browsing.ranking_mode, RankingMode.BROWSING)
+            self.assertEqual(buying.ranking_mode, RankingMode.BUYING)
 
     def test_conversation_reranks_exact_constraint_match(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -12,6 +12,7 @@ from unittest.mock import patch
 import numpy as np
 
 from starter.dialogue import Evidence, SessionState
+from starter.ranking import RankingMode
 from starter.retrieval import (
     CatalogSearch,
     VECTOR_MAX_CONTRIBUTION,
@@ -228,11 +229,9 @@ class CatalogVectorIndexTest(unittest.TestCase):
             )
             search = CatalogSearch(catalog, vector_index=index)
             state = SessionState(user_profile={})
-            state.category_text = "Shoes"
-            state.evidence.extend([
-                Evidence("Shoes", 1.4, "category", 1),
-                Evidence("wide width", 3.0, "clarification", 2),
-            ])
+            state.observe("I'm looking for Shoes, but I'm still exploring.", 1)
+            state.record_question("other")
+            state.observe("For that, what matters is: wide width.", 2)
 
             result = search.search_with_context(state, limit=3)
 
@@ -249,11 +248,9 @@ class CatalogVectorIndexTest(unittest.TestCase):
             vector_index = StubVectorIndex([(1, 0.700), (2, 0.695), (3, 0.100)])
             search = CatalogSearch(catalog, vector_index=vector_index)
             state = SessionState(user_profile={})
-            state.category_text = "Shoes"
-            state.evidence.extend([
-                Evidence("Shoes", 1.4, "category", 1),
-                Evidence("shoe boot", 2.5, "clarification", 2),
-            ])
+            state.observe("I'm looking for Shoes, but I'm still exploring.", 1)
+            state.record_question("other")
+            state.observe("For that, what matters is: shoe boot.", 2)
 
             result = search.search_with_context(state, limit=3)
 
@@ -348,11 +345,9 @@ class CatalogVectorIndexTest(unittest.TestCase):
             )
             search = CatalogSearch(catalog, vector_index=index)
             state = SessionState(user_profile={})
-            state.category_text = "Shoes"
-            state.evidence.extend([
-                Evidence("Shoes", 1.4, "category", 1),
-                Evidence("leather trail boot", 3.0, "clarification", 1),
-            ])
+            state.observe("I'm looking for Shoes, but I'm still exploring.", 1)
+            state.record_question("other")
+            state.observe("For that, what matters is: leather trail boot.", 2)
 
             result = search.search_with_context(state, limit=3)
 
@@ -421,6 +416,32 @@ class CatalogVectorIndexTest(unittest.TestCase):
 
             result = search.search_with_context(state, limit=3)
 
+            self.assertEqual(result.prompt_tokens, 0)
+            self.assertEqual(client.embeddings.calls, [])
+            search.close()
+
+    def test_buying_mode_skips_vector_api_and_uses_precision_track(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            catalog = directory / "catalog.jsonl"
+            write_catalog(catalog)
+            vectors_path, metadata_path = write_artifact(directory, catalog)
+            client = FakeClient({})
+            index = CatalogVectorIndex(
+                catalog,
+                vectors_path=vectors_path,
+                metadata_path=metadata_path,
+                client=client,
+            )
+            search = CatalogSearch(catalog, vector_index=index)
+            state = SessionState(user_profile={})
+            state.observe(
+                "I'm looking for Shoes. A key requirement is: wide width.", 1
+            )
+
+            result = search.search_with_context(state, limit=3)
+
+            self.assertEqual(result.ranking_mode, RankingMode.BUYING)
             self.assertEqual(result.prompt_tokens, 0)
             self.assertEqual(client.embeddings.calls, [])
             search.close()

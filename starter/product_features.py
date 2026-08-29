@@ -115,6 +115,10 @@ class CompiledEvidence:
     tokens: tuple[str, ...]
     normalized_query: str
     weight: float
+    source: str
+    attribute: str | None
+    facets: tuple[tuple[str, tuple[str, ...]], ...]
+    is_budget: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,6 +300,24 @@ class ProductFeatureStore:
                     tokens=unique_terms,
                     normalized_query=" ".join(unique_terms),
                     weight=item.weight,
+                    source=str(getattr(item, "source", "")),
+                    attribute=getattr(item, "attribute", None),
+                    facets=tuple(
+                        (
+                            attribute,
+                            tuple(
+                                sorted(
+                                    {
+                                        match.lower()
+                                        for match in pattern.findall(item.text)
+                                    }
+                                )
+                            ),
+                        )
+                        for attribute, pattern in FACET_PATTERNS.items()
+                        if pattern.search(item.text)
+                    ),
+                    is_budget=bool(BUDGET_RE.search(item.text)),
                 )
             )
             match = BUDGET_RE.search(item.text)

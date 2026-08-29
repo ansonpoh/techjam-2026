@@ -26,6 +26,16 @@ class EmbeddingsClient(Protocol):
     embeddings: _Embeddings
 
 
+class VectorIndex(Protocol):
+    def search(
+        self,
+        structured_query: str | None,
+        limit: int = DEFAULT_VECTOR_LIMIT,
+    ) -> VectorSearchResult: ...
+
+    def close(self) -> None: ...
+
+
 @dataclass(frozen=True)
 class VectorSearchResult:
     rows: list[tuple[int, float]]

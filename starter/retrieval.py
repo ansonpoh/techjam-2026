@@ -14,9 +14,17 @@ from starter.product_features import (
     CompiledQuery,
     ProductFeatures,
     ProductFeatureStore,
+    ProductQuestionFeatures,
     terms,
 )
-from starter.vector_index import CatalogVectorIndex
+from starter.ranking import (
+    DEFAULT_RANKING_POLICIES,
+    IntentRouter,
+    RankingMode,
+    RankingPolicies,
+    RankingPolicy,
+)
+from starter.vector_index import CatalogVectorIndex, VectorIndex
 
 
 QUALITY_REVIEW_WEIGHT = 1.05
@@ -35,6 +43,7 @@ class SearchResult:
     recommendations: list[tuple[str, float]]
     candidates: list[dict]
     prompt_tokens: int = 0
+    ranking_mode: RankingMode | None = None
 
 
 def _text(value: object) -> str:
@@ -79,11 +88,15 @@ class CatalogSearch:
         catalog_path: str | Path,
         feature_cache_size: int = FEATURE_CACHE_SIZE,
         *,
-        vector_index: CatalogVectorIndex | None = None,
+        ranking_policies: RankingPolicies = DEFAULT_RANKING_POLICIES,
+        intent_router: IntentRouter | None = None,
+        vector_index: VectorIndex | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
         self.connection = sqlite3.connect(":memory:")
         self.feature_store = ProductFeatureStore(max_size=feature_cache_size)
+        self.ranking_policies = ranking_policies
+        self.intent_router = intent_router or IntentRouter()
         self._build_index()
         self.vector_index = vector_index or CatalogVectorIndex(self.catalog_path)
 
@@ -226,14 +239,29 @@ class CatalogSearch:
                 candidates.setdefault(parent_asin, product)
 
         query = self.feature_store.compile_query(state.evidence, state.user_profile)
+        routing = self.intent_router.route(state)
+        policy = self.ranking_policies.for_mode(routing.mode)
         base_scores: dict[str, float] = {}
         exact_hard_matches: set[str] = set()
         for parent_asin, product in candidates.items():
             features = product["_features"]
-            score = 85.0 * rrf[parent_asin]
-            score += self._constraint_score(features, query)
-            score += self._price_score(features, query)
-            score += self._quality_tiebreak(features)
+            needs_facets = policy.contradiction_penalty > 0.0 and any(
+                item.source in {"hard_constraint", "override"} and item.facets
+                for item in query.evidence
+            )
+            question_features = (
+                self.feature_store.question_features(product)
+                if needs_facets
+                else None
+            )
+            score = 85.0 * policy.rrf_scale * rrf[parent_asin]
+            score += policy.constraint_scale * self._constraint_score(features, query)
+            score += policy.price_scale * self._price_score(features, query)
+            score += policy.quality_scale * self._quality_tiebreak(features)
+            score += self._constraint_fit_adjustment(
+                features, question_features, query, policy
+            )
+            score += self._budget_violation_adjustment(features, query, policy)
             base_scores[parent_asin] = score
             if self._exact_hard_constraint_match(features, state.evidence):
                 exact_hard_matches.add(parent_asin)
@@ -244,7 +272,12 @@ class CatalogSearch:
         vector_scores: dict[str, float] = {}
         vector_confident = False
         structured_query = state.semantic_query()
-        if candidates and state.category_text and structured_query:
+        if (
+            policy.vector_scale > 0.0
+            and candidates
+            and state.category_text
+            and structured_query
+        ):
             vector_result = self.vector_index.search(structured_query, VECTOR_ROUTE_LIMIT)
             vector_prompt_tokens = vector_result.prompt_tokens
             category_vector_route = [
@@ -283,9 +316,10 @@ class CatalogSearch:
                 vector_confident=vector_confident,
                 has_exact_hard_match=has_exact_hard_match,
                 is_exact_hard_match=parent_asin in exact_hard_matches,
-            )
+            ) * policy.vector_scale
             candidates[parent_asin]["_vector_score"] = similarity
             candidates[parent_asin]["_vector_contribution"] = contribution
+            candidates[parent_asin]["_ranking_mode"] = routing.mode.value
             ranked.append((parent_asin, base_score + contribution))
         ranked.sort(key=lambda item: (-item[1], item[0]))
         context: list[dict] = []
@@ -297,7 +331,75 @@ class CatalogSearch:
             recommendations=ranked[:limit],
             candidates=context,
             prompt_tokens=vector_prompt_tokens,
+            ranking_mode=routing.mode,
         )
+
+    @staticmethod
+    def _constraint_fit_adjustment(
+        product: ProductFeatures,
+        product_facets: ProductQuestionFeatures | None,
+        query: CompiledQuery,
+        policy: RankingPolicy,
+    ) -> float:
+        score = 0.0
+        hard_sources = {"hard_constraint", "override"}
+        for item in query.evidence:
+            if not item.tokens or item.source == "category" or item.is_budget:
+                continue
+            matched = sum(token in product.token_weights for token in item.tokens)
+            coverage = matched / len(item.tokens)
+            exact = (
+                len(item.tokens) >= 2
+                and item.normalized_query in product.normalized_text
+            )
+            if item.source in hard_sources:
+                score += item.weight * (
+                    policy.hard_coverage_bonus * coverage
+                    - policy.hard_missing_penalty * (1.0 - coverage)
+                    + policy.hard_exact_bonus * float(exact)
+                )
+                for attribute, expected_values in item.facets:
+                    actual_values = set(
+                        product_facets.facet_values(attribute)
+                        if product_facets is not None
+                        else ()
+                    )
+                    if (
+                        expected_values
+                        and actual_values
+                        and actual_values.isdisjoint(expected_values)
+                    ):
+                        score -= item.weight * policy.contradiction_penalty
+            else:
+                score += item.weight * (
+                    policy.soft_coverage_bonus * coverage
+                    + policy.soft_exact_bonus * float(exact)
+                )
+        return score
+
+    @staticmethod
+    def _budget_violation_adjustment(
+        product: ProductFeatures,
+        query: CompiledQuery,
+        policy: RankingPolicy,
+    ) -> float:
+        if product.price is None or policy.budget_violation_penalty <= 0.0:
+            return 0.0
+        score = 0.0
+        for budget in query.budgets:
+            relative_error = abs(product.price - budget.amount) / max(
+                budget.amount, 10.0
+            )
+            if budget.mode in {"under", "below", "maximum", "max"}:
+                violation = max(0.0, (product.price - budget.amount) / budget.amount)
+            else:
+                violation = max(0.0, relative_error - 0.35)
+            score -= (
+                budget.weight
+                * policy.budget_violation_penalty
+                * min(violation, 2.0)
+            )
+        return score
 
     @staticmethod
     def _category_match(product: dict, requested_category: str) -> bool:

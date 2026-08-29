@@ -2,7 +2,9 @@ from pathlib import Path
 
 from starter.dialogue import SessionState
 from starter.question_planner import AdaptiveQuestionPlanner
+from starter.ranking import DEFAULT_RANKING_POLICIES, RankingPolicies
 from starter.retrieval import FEATURE_CACHE_SIZE, CatalogSearch
+from starter.vector_index import VectorIndex
 
 
 class Agent:
@@ -12,13 +14,22 @@ class Agent:
         self,
         catalog_path: str | Path = "data/catalog.jsonl",
         feature_cache_size: int = FEATURE_CACHE_SIZE,
+        *,
+        ranking_policies: RankingPolicies = DEFAULT_RANKING_POLICIES,
+        vector_index: VectorIndex | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
         self.search = CatalogSearch(
-            self.catalog_path, feature_cache_size=feature_cache_size
+            self.catalog_path,
+            feature_cache_size=feature_cache_size,
+            ranking_policies=ranking_policies,
+            vector_index=vector_index,
         )
         self.question_planner = AdaptiveQuestionPlanner(self.search.feature_store)
         self._sessions: dict[str, SessionState] = {}
+
+    def close(self) -> None:
+        self.search.close()
 
     def reset(self, session_id: str, user_profile: dict) -> None:
         self._sessions[session_id] = SessionState(user_profile=user_profile)
