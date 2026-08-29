@@ -21,7 +21,11 @@ from starter.ranking import (
     IntentRouter,
     RankingMode,
 )
-from starter.retrieval import CatalogSearch, QUALITY_REVIEW_WEIGHT
+from starter.retrieval import (
+    CatalogSearch,
+    QUALITY_REVIEW_WEIGHT,
+    _hard_constraint_and_expression,
+)
 
 
 def _legacy_constraint_score(
@@ -273,6 +277,41 @@ class AgentRetrievalTest(unittest.TestCase):
             product.token_weights[0] = 99.0  # type: ignore[index]
         with self.assertRaises(ValueError):
             self._features(store, "A", title="duplicate")
+
+    def test_hard_constraint_route_requires_category_and_exact_phrases(self) -> None:
+        evidence = [
+            Evidence("Shirts", 1.4, "category", 1),
+            Evidence("sleeveless design", 3.8, "hard_constraint", 2),
+            Evidence("100% polyester", 6.0, "override", 3),
+            Evidence("under $50", 3.8, "hard_constraint", 3),
+            Evidence("lightweight", 2.5, "clarification", 2),
+        ]
+
+        self.assertEqual(
+            _hard_constraint_and_expression("Shirts", evidence),
+            '"shirts" AND "sleeveless design" AND "100 polyester"',
+        )
+
+    def test_hard_constraint_route_is_disabled_without_hard_constraints(self) -> None:
+        evidence = [Evidence("lightweight", 2.5, "clarification", 2)]
+
+        self.assertEqual(_hard_constraint_and_expression("Shirts", evidence), "")
+
+    def test_default_agent_disables_network_llm_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            agent = Agent(self._write_catalog(directory))
+            try:
+                self.assertEqual(agent._extractor.provider, "none")
+            finally:
+                agent.close()
+
+    def test_llm_extraction_can_be_enabled_explicitly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            agent = Agent(self._write_catalog(directory), llm_provider="openai")
+            try:
+                self.assertEqual(agent._extractor.provider, "openai")
+            finally:
+                agent.close()
 
     def test_feature_cache_reuses_entries_and_evicts_least_recently_used(self) -> None:
         store = ProductFeatureStore(max_size=2)

@@ -27,7 +27,7 @@ class Agent:
         config: AgentConfig = DEFAULT_AGENT_CONFIG,
         ranking_policies: RankingPolicies = DEFAULT_RANKING_POLICIES,
         vector_index: VectorIndex | None = None,
-        llm_provider: str = "auto",
+        llm_provider: str = "none",
         llm_model: Optional[str] = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)

@@ -37,6 +37,13 @@ VECTOR_MIN_MARGIN = 0.011216
 # Preserve the old RRF vector route's theoretical maximum: 85 * 0.2 / (60 + 1).
 VECTOR_MAX_CONTRIBUTION = 85.0 * 0.2 / 61.0
 
+# Kept as separate constants so route weights can be calibrated without
+# changing retrieval structure.
+BROAD_OR_ROUTE_WEIGHT = 1.0
+PHRASE_ROUTE_WEIGHT = 1.0
+CATEGORY_ROUTE_WEIGHT = 1.0
+HARD_CONSTRAINT_AND_ROUTE_WEIGHT = 3.0
+
 
 @dataclass(frozen=True)
 class SearchResult:
@@ -78,6 +85,37 @@ def _phrase_expression(evidence: list[Evidence], limit: int = 4) -> str:
         if chunk_terms:
             phrases.append('"' + " ".join(chunk_terms) + '"')
     return " OR ".join(phrases)
+
+
+def _hard_constraint_and_expression(
+    category_text: str,
+    evidence: list[Evidence],
+    limit: int = 6,
+) -> str:
+    """Require the category and every active non-budget hard phrase."""
+    category_terms = terms(category_text)[:14]
+    if not category_terms:
+        return ""
+
+    hard_phrases: list[str] = []
+    seen: set[str] = set()
+    for item in evidence:
+        if item.source not in {"hard_constraint", "override"}:
+            continue
+        if BUDGET_RE.search(item.text):
+            continue
+        normalized = " ".join(terms(item.text)[:14])
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        hard_phrases.append(f'"{normalized}"')
+        if len(hard_phrases) >= limit:
+            break
+
+    if not hard_phrases:
+        return ""
+    category_phrase = '"' + " ".join(category_terms) + '"'
+    return " AND ".join([category_phrase, *hard_phrases])
 
 
 class CatalogSearch:
@@ -219,7 +257,7 @@ class CatalogSearch:
             return SearchResult(recommendations=[], candidates=[])
 
         routes: list[tuple[float, list[dict]]] = []
-        routes.append((1.0, self._route(
+        routes.append((BROAD_OR_ROUTE_WEIGHT, self._route(
             _or_expression([item.text for item in state.evidence]), 350
         )))
 
@@ -227,12 +265,19 @@ class CatalogSearch:
         if latest is not None:
             phrase_route = self._route(_phrase_expression(state.evidence), 180)
             if phrase_route:
-                routes.append((1.0, phrase_route))
+                routes.append((PHRASE_ROUTE_WEIGHT, phrase_route))
 
         if state.category_text:
             category_route = self._route(_or_expression([state.category_text], limit=16), 180)
             if category_route:
-                routes.append((1.0, category_route))
+                routes.append((CATEGORY_ROUTE_WEIGHT, category_route))
+
+            hard_constraint_route = self._route(
+                _hard_constraint_and_expression(state.category_text, state.evidence),
+                180,
+            )
+            if hard_constraint_route:
+                routes.append((HARD_CONSTRAINT_AND_ROUTE_WEIGHT, hard_constraint_route))
 
         rrf: defaultdict[str, float] = defaultdict(float)
         candidates: dict[str, dict] = {}
