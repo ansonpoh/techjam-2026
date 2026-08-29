@@ -213,7 +213,7 @@ class CatalogSearch:
         }
         vector_prompt_tokens = 0
         if lexical_candidate_ids:
-            vector_result = self.vector_index.search(state.evidence, VECTOR_ROUTE_LIMIT)
+            vector_result = self.vector_index.search(state.semantic_query(), VECTOR_ROUTE_LIMIT)
             vector_prompt_tokens = vector_result.prompt_tokens
             vector_route = [
                 product

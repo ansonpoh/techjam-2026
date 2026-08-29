@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, Sequence
 
-from starter.dialogue import Evidence
-
 try:
     import numpy as np
 except ImportError:  # The lexical fallback must still be importable.
@@ -43,7 +41,9 @@ def catalog_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
 
 
 def _normalized_text(value: str) -> str:
-    return " ".join(str(value).split()).casefold()
+    return "\n".join(
+        line for raw_line in str(value).splitlines() if (line := " ".join(raw_line.split()))
+    )
 
 
 def _response_prompt_tokens(response: object) -> int:
@@ -219,37 +219,21 @@ class CatalogVectorIndex:
 
     def search(
         self,
-        evidence: Sequence[Evidence],
+        structured_query: str | None,
         limit: int = DEFAULT_VECTOR_LIMIT,
     ) -> VectorSearchResult:
-        if not self.enabled or np is None or not evidence:
+        if not self.enabled or np is None or not structured_query:
             return VectorSearchResult(rows=[])
 
-        weighted: list[tuple[str, float]] = []
-        for item in evidence:
-            text = _normalized_text(item.text)
-            if text:
-                weighted.append((text, max(0.0, float(item.weight))))
-        if not weighted:
+        query_text = _normalized_text(structured_query)
+        if not query_text:
             return VectorSearchResult(rows=[])
 
-        prompt_tokens = self._embed_missing(list(dict.fromkeys(text for text, _ in weighted)))
-        if not self.enabled or any(text not in self._cache for text, _ in weighted):
+        prompt_tokens = self._embed_missing([query_text])
+        if not self.enabled or query_text not in self._cache:
             return VectorSearchResult(rows=[], prompt_tokens=prompt_tokens)
 
-        query = np.zeros(self.dimensions, dtype=np.float32)
-        total_weight = 0.0
-        for text, weight in weighted:
-            if weight <= 0.0:
-                continue
-            query += weight * self._cache[text]
-            total_weight += weight
-        if total_weight <= 0.0:
-            return VectorSearchResult(rows=[], prompt_tokens=prompt_tokens)
-        norm = float(np.linalg.norm(query))
-        if not np.isfinite(norm) or norm <= 0.0:
-            return VectorSearchResult(rows=[], prompt_tokens=prompt_tokens)
-        query /= norm
+        query = self._cache[query_text]
 
         scores = np.asarray(self.vectors @ query)
         count = min(max(0, int(limit)), len(scores))

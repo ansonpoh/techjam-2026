@@ -109,8 +109,10 @@ python -m scripts.generate_catalog_embeddings
 The command uses `text-embedding-3-small` with 256 dimensions, resumes from a
 completed batch after interruption, and writes an ignored approximately 49 MiB
 `data/catalog_embeddings.npy` file plus checked metadata. At runtime, active
-conversation evidence is embedded and compared with NumPy, then fused with the
-keyword, phrase, and category routes. `OPENAI_API_KEY` may be supplied through
+intent is filtered and rendered as one structured category/features/use-case
+query, embedded once, and compared with NumPy before fusion with the keyword,
+phrase, and category routes. Category-only or still-exploring queries skip the
+vector route. `OPENAI_API_KEY` may be supplied through
 the environment or an ignored `.env` file; the existing `OPENAI_APIKEY` alias
 is also accepted for compatibility. If credentials, network access, or
 the validated artifact are unavailable, the agent continues with its existing

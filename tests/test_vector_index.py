@@ -120,17 +120,16 @@ class CatalogVectorIndexTest(unittest.TestCase):
             catalog = directory / "catalog.jsonl"
             write_catalog(catalog)
             vectors_path, metadata_path = write_artifact(directory, catalog)
-            client = FakeClient({"red city shoe": [1.0, 0.0]})
+            query = "Required features: red city shoe"
+            client = FakeClient({query: [1.0, 0.0]})
             index = CatalogVectorIndex(
                 catalog,
                 vectors_path=vectors_path,
                 metadata_path=metadata_path,
                 client=client,
             )
-            evidence = [Evidence("Red city shoe", 2.0, "clarification", 1)]
-
-            first = index.search(evidence, limit=2)
-            second = index.search(evidence, limit=2)
+            first = index.search(query, limit=2)
+            second = index.search(query, limit=2)
 
             self.assertEqual(first.rows[0][0], 1)
             self.assertEqual(first.prompt_tokens, 7)
@@ -138,13 +137,14 @@ class CatalogVectorIndexTest(unittest.TestCase):
             self.assertEqual(len(client.embeddings.calls), 1)
             index.close()
 
-    def test_evidence_weights_change_the_combined_query(self) -> None:
+    def test_structured_query_is_embedded_once_without_vector_averaging(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
             catalog = directory / "catalog.jsonl"
             write_catalog(catalog)
             vectors_path, metadata_path = write_artifact(directory, catalog)
-            client = FakeClient({"city": [1.0, 0.0], "trail": [0.0, 1.0]})
+            query = "Product category: Shoes\nRequired features: wide width\nIntended use: trail"
+            client = FakeClient({query: [0.0, 1.0]})
             index = CatalogVectorIndex(
                 catalog,
                 vectors_path=vectors_path,
@@ -152,13 +152,10 @@ class CatalogVectorIndexTest(unittest.TestCase):
                 client=client,
             )
 
-            result = index.search([
-                Evidence("city", 1.0, "category", 1),
-                Evidence("trail", 4.0, "hard_constraint", 2),
-            ], limit=1)
+            result = index.search(query, limit=1)
 
             self.assertEqual(result.rows[0][0], 2)
-            self.assertEqual(client.embeddings.calls, [["city", "trail"]])
+            self.assertEqual(client.embeddings.calls, [[query]])
             index.close()
 
     def test_catalog_checksum_mismatch_disables_vector_route(self) -> None:
@@ -179,7 +176,7 @@ class CatalogVectorIndexTest(unittest.TestCase):
             )
 
             self.assertFalse(index.enabled)
-            self.assertEqual(index.search([Evidence("shoe", 1.0, "category", 1)]).rows, [])
+            self.assertEqual(index.search("Product category: Shoes").rows, [])
             self.assertEqual(client.embeddings.calls, [])
             index.close()
 
@@ -189,7 +186,8 @@ class CatalogVectorIndexTest(unittest.TestCase):
             catalog = directory / "catalog.jsonl"
             write_catalog(catalog)
             vectors_path, metadata_path = write_artifact(directory, catalog)
-            client = FakeClient({"shoes": [0.0, 1.0]})
+            query = "Product category: Shoes\nRequired features: wide width"
+            client = FakeClient({query: [0.0, 1.0]})
             index = CatalogVectorIndex(
                 catalog,
                 vectors_path=vectors_path,
@@ -198,7 +196,11 @@ class CatalogVectorIndexTest(unittest.TestCase):
             )
             search = CatalogSearch(catalog, vector_index=index)
             state = SessionState(user_profile={})
-            state.evidence.append(Evidence("shoes", 3.0, "clarification", 1))
+            state.category_text = "Shoes"
+            state.evidence.extend([
+                Evidence("Shoes", 1.4, "category", 1),
+                Evidence("wide width", 3.0, "clarification", 2),
+            ])
 
             result = search.search_with_context(state, limit=3)
 
@@ -214,7 +216,7 @@ class CatalogVectorIndexTest(unittest.TestCase):
             catalog = directory / "catalog.jsonl"
             write_catalog(catalog)
             vectors_path, metadata_path = write_artifact(directory, catalog)
-            client = FakeClient({"mountain footwear": [0.0, 1.0]})
+            client = FakeClient({"Required features: mountain footwear": [0.0, 1.0]})
             index = CatalogVectorIndex(
                 catalog,
                 vectors_path=vectors_path,
@@ -260,6 +262,64 @@ class CatalogVectorIndexTest(unittest.TestCase):
         state.observe("Actually, ignore my earlier preference. What I need is: trail.", 2)
         self.assertNotIn("i prefer red", [item.text.casefold() for item in state.evidence])
         self.assertIn("trail", [item.text.casefold() for item in state.evidence])
+        self.assertEqual(
+            state.semantic_query(),
+            "Product category: Shoes\nRequired features: trail",
+        )
+
+    def test_semantic_query_excludes_generic_and_repeated_evidence(self) -> None:
+        state = SessionState(user_profile={})
+        state.observe("I'm looking for Shoes, but I'm still exploring.", 1)
+        self.assertIsNone(state.semantic_query())
+
+        for category in ("Shoes", "Jewelry"):
+            with self.subTest(category=category):
+                generic_state = SessionState(user_profile={})
+                generic_state.observe(category, 1)
+                self.assertIsNone(generic_state.semantic_query())
+
+        state.record_question("other")
+        state.observe("For that, what matters is: Shoes; waterproof; wide width.", 2)
+        self.assertEqual(
+            state.semantic_query(),
+            "Product category: Shoes\nRequired features: waterproof; wide width",
+        )
+
+    def test_semantic_query_labels_use_case_and_skips_no_preference(self) -> None:
+        state = SessionState(user_profile={})
+        state.observe("I'm looking for Shoes, but I'm still exploring.", 1)
+        state.record_question("use_case")
+        state.observe("For that, what matters is: trail running.", 2)
+        state.record_question("color")
+        state.observe("I don't have a preference for color; please use your judgment.", 3)
+
+        self.assertEqual(
+            state.semantic_query(),
+            "Product category: Shoes\nIntended use: trail running",
+        )
+
+    def test_generic_category_does_not_call_embeddings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            catalog = directory / "catalog.jsonl"
+            write_catalog(catalog)
+            vectors_path, metadata_path = write_artifact(directory, catalog)
+            client = FakeClient({})
+            index = CatalogVectorIndex(
+                catalog,
+                vectors_path=vectors_path,
+                metadata_path=metadata_path,
+                client=client,
+            )
+            search = CatalogSearch(catalog, vector_index=index)
+            state = SessionState(user_profile={})
+            state.observe("I'm looking for Shoes, but I'm still exploring.", 1)
+
+            result = search.search_with_context(state, limit=3)
+
+            self.assertEqual(result.prompt_tokens, 0)
+            self.assertEqual(client.embeddings.calls, [])
+            search.close()
 
     def test_catalog_generator_resumes_after_completed_batch(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
