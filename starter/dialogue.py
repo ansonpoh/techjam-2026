@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from starter.memory import LongTermUserProfile
+
 
 OVERRIDE_RE = re.compile(
     r"\b(actually|instead|changed my mind|ignore|no longer|rather than)\b", re.I
@@ -15,6 +17,8 @@ LOOKING_FOR_RE = re.compile(r"\blooking for\s+(.+?)(?:[,.]|$)", re.I)
 NEED_RE = re.compile(r"\bwhat i need is\s*:\s*(.+)$", re.I)
 REQUIREMENT_RE = re.compile(r"\bkey requirement is\s*:\s*(.+)$", re.I)
 MATTERS_RE = re.compile(r"\bwhat matters is\s*:\s*(.+)$", re.I)
+NEGATIVE_PREFERENCE_RE = re.compile(r"\b(?:do not|don't|dont|no longer)\s+(?:want|like|need|prefer)\s+(.+)$", re.I)
+DURABLE_PREFERENCE_RE = re.compile(r"\b(?:always|generally|usually)\b", re.I)
 EXPLORING_RE = re.compile(r"\bi(?:'m| am) still exploring\b", re.I)
 QUESTION_BOILERPLATE_RE = re.compile(
     r"\b(?:options are not quite right|ask me about|closest matches (?:differ|vary)|"
@@ -55,6 +59,7 @@ class SessionState:
     messages: list[str] = field(default_factory=list)
     category_text: str = ""
     last_turn: int = 0
+    long_term_profile: LongTermUserProfile | None = None
 
     def observe(self, message: str, turn: int) -> None:
         """Convert the latest customer message into weighted positive evidence."""
@@ -67,6 +72,16 @@ class SessionState:
         if NO_PREFERENCE_RE.search(message):
             if self.asked_attributes:
                 self.no_preference_attributes.add(self.asked_attributes[-1])
+            return
+
+        negative = NEGATIVE_PREFERENCE_RE.search(message)
+        if negative:
+            value = _clean(negative.group(1))
+            attribute = self._answer_attribute() or "other"
+            self.evidence = [item for item in self.evidence if not (item.attribute == attribute and value.casefold() in item.text.casefold())]
+            self.evidence.append(Evidence(value, 3.8, "exclusion", turn, attribute))
+            if self.long_term_profile:
+                self.long_term_profile.reject(attribute, value)
             return
 
         is_override = bool(OVERRIDE_RE.search(message))
@@ -140,6 +155,12 @@ class SessionState:
         self.evidence.append(
             Evidence(text=text, weight=weight, source=source, turn=turn, attribute=attribute)
         )
+        if self.long_term_profile:
+            self.long_term_profile.observe(
+                attribute or "other", text, turn,
+                durable=bool(DURABLE_PREFERENCE_RE.search(text)),
+                replacement=source == "override",
+            )
 
     def record_question(self, attribute: str) -> None:
         self.asked_attributes.append(attribute)
