@@ -1,37 +1,11 @@
 from __future__ import annotations
 
-import re
 from collections import Counter
 from dataclasses import dataclass
 
 from starter.dialogue import SessionState
-from starter.retrieval import STOPWORDS, TOKEN_RE
+from starter.product_features import FACET_ORDER, ProductFeatures, ProductFeatureStore
 
-
-# The attribute names are imposed by the Agent API contract. The planner does
-# not use a fixed ordering or fixed question sentences; it chooses among these
-# facets from the live candidate distribution.
-FACET_PATTERNS = {
-    "material": re.compile(
-        r"\b(cotton|polyester|nylon|leather|wool|spandex|silk|rayon|linen|"
-        r"denim|fleece|suede|canvas|rubber|synthetic|acrylic|fabric)\b", re.I
-    ),
-    "color": re.compile(
-        r"\b(black|white|blue|red|pink|green|brown|gray|grey|purple|yellow|"
-        r"orange|beige|navy|gold|silver|multicolor)\b", re.I
-    ),
-    "size": re.compile(
-        r"\b(x{0,3}s|x{0,4}l|small|medium|large|wide|narrow|petite|plus size)\b", re.I
-    ),
-    "style": re.compile(
-        r"\b(casual|formal|classic|modern|vintage|slim|regular|relaxed|fitted|"
-        r"loose|athletic|crew neck|v-neck|long sleeve|short sleeve)\b", re.I
-    ),
-    "use_case": re.compile(
-        r"\b(running|hiking|walking|work|office|gym|workout|sports|travel|"
-        r"winter|outdoor|wedding|party|sleep|swimming|cycling)\b", re.I
-    ),
-}
 
 # Additional Information for agent to filter by.
 ANSWERABILITY_PRIORS = {
@@ -55,20 +29,11 @@ class FacetScore:
     examples: tuple[str, ...]
 
 
-def _tokens(value: object) -> list[str]:
-    return [
-        token.lower()
-        for token in TOKEN_RE.findall(str(value or ""))
-        if len(token) > 2 and token.lower() not in STOPWORDS
-    ]
-
-
-def _compact(value: object, limit: int = 32) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()[:limit].rstrip()
-
-
 class AdaptiveQuestionPlanner:
     """Select clarification facets from candidate-pool information gain."""
+
+    def __init__(self, feature_store: ProductFeatureStore) -> None:
+        self.feature_store = feature_store
 
     def choose(
         self,
@@ -122,46 +87,62 @@ class AdaptiveQuestionPlanner:
 
     def _score_facets(self, candidates: list[dict]) -> list[FacetScore]:
         observations: dict[str, list[tuple[str, ...]]] = {
-            attribute: [] for attribute in (*FACET_PATTERNS, "budget", "brand", "category", "feature")
+            attribute: []
+            for attribute in (*FACET_ORDER, "budget", "brand", "category", "feature")
         }
 
-        feature_documents = [set(_tokens(product.get("features"))) for product in candidates]
-        feature_frequency = Counter(token for document in feature_documents for token in document)
+        documents = [self._features(product) for product in candidates]
+        feature_frequency = Counter(
+            token
+            for document in documents
+            for token in document.feature_tokens
+        )
 
         prices = sorted(
-            float(product["price"])
-            for product in candidates
-            if self._is_positive_number(product.get("price"))
+            document.price
+            for document in documents
+            if document.price is not None
         )
         price_cuts = self._quartiles(prices)
 
-        for index, product in enumerate(candidates):
-            searchable = " ".join(
-                str(product.get(field) or "")
-                for field in ("title", "features", "details", "description")
+        for product, document in zip(candidates, documents):
+            question_features = self.feature_store.question_features(product)
+            for attribute in FACET_ORDER:
+                observations[attribute].append(
+                    question_features.facet_values(attribute)
+                )
+
+            observations["budget"].append(
+                self._budget_bucket(document.price, price_cuts)
             )
-            for attribute, pattern in FACET_PATTERNS.items():
-                values = tuple(sorted({match.lower() for match in pattern.findall(searchable)}))
-                observations[attribute].append(values)
+            observations["brand"].append(
+                (document.brand,) if document.brand else ()
+            )
 
-            observations["budget"].append(self._budget_bucket(product.get("price"), price_cuts))
-            brand = _compact(product.get("store")).casefold()
-            observations["brand"].append((brand,) if brand else ())
-
-            category_tokens = _tokens(product.get("categories"))
-            category = " ".join(category_tokens[-3:])
+            category = " ".join(
+                document.category_tokens[-3:]
+            )
             observations["category"].append((category,) if category else ())
 
             feature_values = sorted(
-                feature_documents[index],
+                document.feature_tokens,
                 key=lambda token: (feature_frequency[token], token),
             )[:2]
-            observations["feature"].append(tuple(feature_values))
+            observations["feature"].append(
+                tuple(feature_values)
+            )
 
         return [
             self._information_gain(attribute, values)
             for attribute, values in observations.items()
         ]
+
+    @staticmethod
+    def _features(product: dict) -> ProductFeatures:
+        features = product.get("_features")
+        if not isinstance(features, ProductFeatures):
+            raise TypeError("candidate is missing precomputed ProductFeatures")
+        return features
 
     @staticmethod
     def _information_gain(
@@ -216,13 +197,6 @@ class AdaptiveQuestionPlanner:
         )
 
     @staticmethod
-    def _is_positive_number(value: object) -> bool:
-        try:
-            return float(value) > 0
-        except (TypeError, ValueError):
-            return False
-
-    @staticmethod
     def _quartiles(values: list[float]) -> tuple[float, float, float] | None:
         if len(values) < 4:
             return None
@@ -236,8 +210,7 @@ class AdaptiveQuestionPlanner:
     def _budget_bucket(
         value: object, cuts: tuple[float, float, float] | None
     ) -> tuple[str, ...]:
-        if cuts is None or not AdaptiveQuestionPlanner._is_positive_number(value):
+        if cuts is None or value is None:
             return ()
-        price = float(value)
-        bucket = sum(price > cut for cut in cuts) + 1
+        bucket = sum(value > cut for cut in cuts) + 1
         return (f"price group {bucket}",)

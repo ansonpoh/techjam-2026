@@ -64,7 +64,9 @@ The pipeline has five stages:
    scores are calibrated.
 4. A deterministic reranker scores constraint coverage, exact metadata
    phrases, budget proximity, a small aggregate-profile match, and a
-   log-scaled product-popularity prior.
+   log-scaled product-popularity prior. Product text is normalized once on
+   first retrieval and retained in a bounded 5,000-entry LRU feature cache;
+   query evidence is compiled once per turn and reused for every candidate.
 5. An adaptive question planner measures how much the live candidates differ
    across material, colour, size, style, use case, price, brand, category, and
    features. It selects the facet with the greatest estimated information gain
@@ -76,18 +78,13 @@ The current public-set results are:
 | Agent | Hit Rate@10 | MRR | MTTC | Efficiency | TechnicalScore |
 |---|---:|---:|---:|---:|---:|
 | Released BM25 baseline | 0.125 | 0.068034 | 9.81 | 0.119 | 0.106710 |
-| Stateful adaptive multi-route agent | **0.995** | **0.721635** | **1.845** | **0.9155** | **0.897091** |
+| Stateful adaptive multi-route agent | **0.990** | **0.865117** | **2.09** | **0.891** | **0.932735** |
 
-Scenario Hit Rate@10 is `0.9875` for Buying and `1.0` for Browsing, Intent
-Override, and Boundary. These are development-set measurements, not estimates
-of the private leaderboard score. The method does not memorize public target
-identifiers; public labels are used only by the evaluator and optional
-diagnostic script.
-
-For comparison, the earlier fixed clarification sequence scored `0.899689`.
-The adaptive policy gives up `0.002598` TechnicalScore while preserving the
-same `0.995` Hit Rate, in exchange for questions that react to the current
-candidate pool rather than assuming one predetermined conversation path.
+Scenario Hit Rate@10 is `0.9875` for Buying, `0.966667` for Intent Override,
+and `1.0` for Browsing and Boundary. These are development-set measurements,
+not estimates of the private leaderboard score. The method does not memorize
+public target identifiers; public labels are used only by the evaluator and
+optional diagnostic script.
 
 ### Reproduce the Results
 
@@ -109,16 +106,17 @@ The diagnostic script is development-only and is not imported by the Agent.
 - Model/API cost and reported token usage are zero. The evaluated path is
   deterministic and standard-library-only.
 - On the development machine with Python 3.13.5, building the 50,000-product
-  in-memory index took approximately 1.81 seconds. A small ten-turn benchmark
-  averaged approximately 163 ms per response with adaptive question analysis.
-  The complete 200-session public evaluator, including its own catalog loading
-  and Agent startup, took about 62 seconds. These measurements are
+  in-memory index took approximately 3.9 seconds. A ten-turn benchmark averaged
+  approximately 172 ms per response with adaptive question analysis. On a
+  deterministic 20-session slice, a 5,000-product feature cache reduced
+  evaluation time from 12.654 seconds with effectively no reuse to 9.220
+  seconds, a 27.1% reduction with identical metrics. These measurements are
   hardware-dependent.
 - The released simulator reveals constraints copied from catalog metadata, so
   exact phrases are especially informative. More varied real customer language
   would benefit from an optional local semantic-retrieval route.
 - Very broad categories paired only with generic attributes can remain
-  intrinsically ambiguous. The public run misses one such session, and private
+  intrinsically ambiguous. The public run misses two sessions, and private
   performance may be lower than the development score.
 - The popularity feature is log-scaled and subordinate to textual constraints,
   but it can still favor established products when several candidates are

@@ -2,37 +2,23 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 from starter.dialogue import Evidence, SessionState
-
-
-TOKEN_RE = re.compile(r"[a-z0-9]+", re.I)
-BUDGET_RE = re.compile(
-    r"\b(?P<mode>under|below|maximum|max|around|about|budget(?:\s+around)?)?\s*"
-    r"\$\s*(?P<amount>\d+(?:\.\d+)?)",
-    re.I,
+from starter.product_features import (
+    FIELD_WEIGHTS,
+    CompiledQuery,
+    ProductFeatures,
+    ProductFeatureStore,
+    terms,
 )
-STOPWORDS = {
-    "a", "about", "additional", "am", "an", "and", "are", "as", "at", "be",
-    "but", "by", "do", "for", "from", "have", "i", "in", "is", "it", "looking",
-    "me", "my", "need", "not", "of", "on", "or", "please", "preference", "some",
-    "still", "that", "the", "these", "this", "those", "to", "want", "what", "with",
-    "would", "you", "your",
-}
-FIELD_WEIGHTS = {
-    "title": 4.0,
-    "categories": 3.0,
-    "features": 2.8,
-    "details": 2.8,
-    "store": 1.5,
-    "description": 1.3,
-}
+
+
 QUALITY_REVIEW_WEIGHT = 1.05
+FEATURE_CACHE_SIZE = 5_000
 
 
 @dataclass(frozen=True)
@@ -51,28 +37,25 @@ def _text(value: object) -> str:
     return str(value)
 
 
-def terms(value: str) -> list[str]:
-    return [
-        token.lower()
-        for token in TOKEN_RE.findall(value)
-        if len(token) > 1 and token.lower() not in STOPWORDS
-    ]
-
-
 def _or_expression(values: list[str], limit: int = 48) -> str:
     unique = list(dict.fromkeys(token for value in values for token in terms(value)))[:limit]
     return " OR ".join(f'"{token}"' for token in unique)
 
 
 def _phrase_expression(evidence: list[Evidence], limit: int = 4) -> str:
+    tokenized = [
+        (item, terms(item.text))
+        for item in evidence
+        if item.source != "category"
+    ]
     chunks = sorted(
-        (item for item in evidence if item.source != "category" and terms(item.text)),
-        key=lambda item: (len(set(terms(item.text))), item.weight, item.turn),
+        ((item, item_terms) for item, item_terms in tokenized if item_terms),
+        key=lambda pair: (len(set(pair[1])), pair[0].weight, pair[0].turn),
         reverse=True,
     )
     phrases: list[str] = []
-    for item in chunks[:limit]:
-        chunk_terms = terms(item.text)[:14]
+    for _, item_terms in chunks[:limit]:
+        chunk_terms = item_terms[:14]
         if chunk_terms:
             phrases.append('"' + " ".join(chunk_terms) + '"')
     return " OR ".join(phrases)
@@ -81,9 +64,14 @@ def _phrase_expression(evidence: list[Evidence], limit: int = 4) -> str:
 class CatalogSearch:
     """Multi-route FTS retrieval plus deterministic constraint reranking."""
 
-    def __init__(self, catalog_path: str | Path) -> None:
+    def __init__(
+        self,
+        catalog_path: str | Path,
+        feature_cache_size: int = FEATURE_CACHE_SIZE,
+    ) -> None:
         self.catalog_path = Path(catalog_path)
         self.connection = sqlite3.connect(":memory:")
+        self.feature_store = ProductFeatureStore(max_size=feature_cache_size)
         self._build_index()
 
     def _build_index(self) -> None:
@@ -98,14 +86,23 @@ class CatalogSearch:
         with self.catalog_path.open(encoding="utf-8") as handle:
             for line in handle:
                 product = json.loads(line)
+                parent_asin = str(product["parent_asin"])
+                fields = {
+                    "title": _text(product.get("title")),
+                    "categories": _text(product.get("categories")),
+                    "features": _text(product.get("features")),
+                    "details": _text(product.get("details")),
+                    "store": _text(product.get("store")),
+                    "description": _text(product.get("description")),
+                }
                 batch.append((
-                    str(product["parent_asin"]),
-                    _text(product.get("title")),
-                    _text(product.get("categories")),
-                    _text(product.get("features")),
-                    _text(product.get("details")),
-                    _text(product.get("store")),
-                    _text(product.get("description")),
+                    parent_asin,
+                    fields["title"],
+                    fields["categories"],
+                    fields["features"],
+                    fields["details"],
+                    fields["store"],
+                    fields["description"],
                     _text(product.get("price")),
                     _text(product.get("average_rating")),
                     _text(product.get("rating_number")),
@@ -136,7 +133,22 @@ class CatalogSearch:
             "parent_asin", "title", "categories", "features", "details", "store",
             "description", "price", "average_rating", "rating_number",
         )
-        return [dict(zip(keys, row)) for row in rows]
+        products: list[dict] = []
+        for row in rows:
+            product = dict(zip(keys, row))
+            fields = {
+                field: str(product.get(field) or "")
+                for field in FIELD_WEIGHTS
+            }
+            product["_features"] = self.feature_store.get_or_add(
+                str(product["parent_asin"]),
+                fields,
+                price=product.get("price"),
+                average_rating=product.get("average_rating"),
+                rating_number=product.get("rating_number"),
+            )
+            products.append(product)
+        return products
 
     def search(self, state: SessionState, limit: int = 10) -> list[tuple[str, float]]:
         return self.search_with_context(state, limit).recommendations
@@ -167,12 +179,14 @@ class CatalogSearch:
                 rrf[parent_asin] += 1.0 / (60.0 + rank)
                 candidates.setdefault(parent_asin, product)
 
+        query = self.feature_store.compile_query(state.evidence, state.user_profile)
         ranked: list[tuple[str, float]] = []
         for parent_asin, product in candidates.items():
+            features = product["_features"]
             score = 85.0 * rrf[parent_asin]
-            score += self._constraint_score(product, state.evidence, state.user_profile)
-            score += self._price_score(product, state.evidence)
-            score += self._quality_tiebreak(product)
+            score += self._constraint_score(features, query)
+            score += self._price_score(features, query)
+            score += self._quality_tiebreak(features)
             ranked.append((parent_asin, score))
         ranked.sort(key=lambda item: (-item[1], item[0]))
         context: list[dict] = []
@@ -183,91 +197,64 @@ class CatalogSearch:
         return SearchResult(recommendations=ranked[:limit], candidates=context)
 
     @staticmethod
-    def _constraint_score(
-        product: dict, evidence: list[Evidence], user_profile: dict | None = None
-    ) -> float:
-        field_tokens = {
-            field: set(terms(str(product.get(field) or "")))
-            for field in FIELD_WEIGHTS
-        }
-        normalized_fields = {
-            field: " ".join(terms(str(product.get(field) or "")))
-            for field in FIELD_WEIGHTS
-        }
+    def _constraint_score(product: ProductFeatures, query: CompiledQuery) -> float:
         score = 0.0
-        for item in evidence:
-            query_terms = list(dict.fromkeys(terms(item.text)))
-            if not query_terms:
+        for item in query.evidence:
+            if not item.tokens:
                 continue
             matched_weight = 0.0
             matched_terms = 0
-            for token in query_terms:
-                best_field_weight = max(
-                    (
-                        weight
-                        for field, weight in FIELD_WEIGHTS.items()
-                        if token in field_tokens[field]
-                    ),
-                    default=0.0,
-                )
+            for token in item.tokens:
+                best_field_weight = product.token_weights.get(token, 0.0)
                 matched_weight += best_field_weight
                 matched_terms += int(best_field_weight > 0.0)
-            coverage = matched_terms / len(query_terms)
+            coverage = matched_terms / len(item.tokens)
             field_affinity = matched_weight / (
-                len(query_terms) * max(FIELD_WEIGHTS.values())
+                len(item.tokens) * max(FIELD_WEIGHTS.values())
             )
             score += item.weight * (1.9 * coverage + 0.4 * field_affinity)
 
-            normalized_query = " ".join(query_terms)
-            if len(query_terms) >= 2 and any(
-                normalized_query in value for value in normalized_fields.values()
-            ):
-                specificity = min(2.0, 0.55 + 0.22 * len(query_terms))
+            if len(item.tokens) >= 2 and item.normalized_query in product.normalized_text:
+                specificity = min(2.0, 0.55 + 0.22 * len(item.tokens))
                 score += item.weight * specificity
             if coverage >= 0.999:
                 score += item.weight * 0.45
-        tags = user_profile.get("preference_tags") if isinstance(user_profile, dict) else None
-        if isinstance(tags, list) and tags:
-            preference_terms = {token for tag in tags for token in terms(str(tag))}
-            product_terms = set().union(*field_tokens.values())
-            if preference_terms:
-                score += 0.45 * len(preference_terms & product_terms) / len(preference_terms)
+        if query.preference_tokens:
+            matches = sum(
+                token in product.token_weights
+                for token in query.preference_tokens
+            )
+            score += 0.45 * matches / len(query.preference_tokens)
         return score
 
     @staticmethod
-    def _price_score(product: dict, evidence: list[Evidence]) -> float:
-        try:
-            price = float(product.get("price") or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
-        if price <= 0.0:
+    def _price_score(product: ProductFeatures, query: CompiledQuery) -> float:
+        if product.price is None:
             return 0.0
 
         score = 0.0
-        for item in evidence:
-            match = BUDGET_RE.search(item.text)
-            if not match:
-                continue
-            amount = float(match.group("amount"))
-            mode = (match.group("mode") or "around").lower()
-            if mode in {"under", "below", "maximum", "max"}:
-                closeness = 1.0 if price <= amount else max(0.0, 1.0 - (price - amount) / amount)
+        for budget in query.budgets:
+            if budget.mode in {"under", "below", "maximum", "max"}:
+                closeness = (
+                    1.0
+                    if product.price <= budget.amount
+                    else max(
+                        0.0,
+                        1.0 - (product.price - budget.amount) / budget.amount,
+                    )
+                )
             else:
-                closeness = max(0.0, 1.0 - abs(price - amount) / max(amount, 10.0))
-            score += item.weight * 1.4 * closeness
+                closeness = max(
+                    0.0,
+                    1.0
+                    - abs(product.price - budget.amount) / max(budget.amount, 10.0),
+                )
+            score += budget.weight * 1.4 * closeness
         return score
 
     @staticmethod
-    def _quality_tiebreak(product: dict) -> float:
-        try:
-            rating = float(product.get("average_rating") or 0.0)
-        except (TypeError, ValueError):
-            rating = 0.0
-        try:
-            count = max(0, int(float(product.get("rating_number") or 0)))
-        except (TypeError, ValueError):
-            count = 0
+    def _quality_tiebreak(product: ProductFeatures) -> float:
         return (
-            min(max(rating, 0.0), 5.0) * 0.02
-            + math.log1p(count) * QUALITY_REVIEW_WEIGHT
+            min(max(product.average_rating, 0.0), 5.0) * 0.02
+            + math.log1p(product.rating_number) * QUALITY_REVIEW_WEIGHT
         )

@@ -2,16 +2,22 @@ from pathlib import Path
 
 from starter.dialogue import SessionState
 from starter.question_planner import AdaptiveQuestionPlanner
-from starter.retrieval import CatalogSearch
+from starter.retrieval import FEATURE_CACHE_SIZE, CatalogSearch
 
 
 class Agent:
     """Stateful, offline conversational product-search agent."""
 
-    def __init__(self, catalog_path: str | Path = "data/catalog.jsonl") -> None:
+    def __init__(
+        self,
+        catalog_path: str | Path = "data/catalog.jsonl",
+        feature_cache_size: int = FEATURE_CACHE_SIZE,
+    ) -> None:
         self.catalog_path = Path(catalog_path)
-        self.search = CatalogSearch(self.catalog_path)
-        self.question_planner = AdaptiveQuestionPlanner()
+        self.search = CatalogSearch(
+            self.catalog_path, feature_cache_size=feature_cache_size
+        )
+        self.question_planner = AdaptiveQuestionPlanner(self.search.feature_store)
         self._sessions: dict[str, SessionState] = {}
 
     def reset(self, session_id: str, user_profile: dict) -> None:
