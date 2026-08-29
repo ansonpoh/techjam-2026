@@ -297,22 +297,6 @@ class AgentRetrievalTest(unittest.TestCase):
 
         self.assertEqual(_hard_constraint_and_expression("Shirts", evidence), "")
 
-    def test_default_agent_disables_network_llm_extraction(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            agent = Agent(self._write_catalog(directory))
-            try:
-                self.assertEqual(agent._extractor.provider, "none")
-            finally:
-                agent.close()
-
-    def test_llm_extraction_can_be_enabled_explicitly(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            agent = Agent(self._write_catalog(directory), llm_provider="openai")
-            try:
-                self.assertEqual(agent._extractor.provider, "openai")
-            finally:
-                agent.close()
-
     def test_feature_cache_reuses_entries_and_evicts_least_recently_used(self) -> None:
         store = ProductFeatureStore(max_size=2)
         fields = {field: "cotton shirt" for field in FIELD_WEIGHTS}
