@@ -317,6 +317,9 @@ class CatalogSearch:
                 features, question_features, query, policy
             )
             score += self._budget_violation_adjustment(features, query, policy)
+            profile_bonus = self._profile_bonus(features, state, policy)
+            score += profile_bonus
+            product["_profile_bonus"] = profile_bonus
             base_scores[parent_asin] = score
             exact_count, hard_constraint_count = self._hard_constraint_exactness(
                 features, state.evidence
@@ -568,6 +571,30 @@ class CatalogSearch:
             )
             score += 0.45 * matches / len(query.preference_tokens)
         return score
+
+    @staticmethod
+    def _profile_bonus(
+        product: ProductFeatures, state: SessionState, policy: RankingPolicy
+    ) -> float:
+        """A bounded tie-break from locally learned, non-conflicting preferences."""
+        profile = state.long_term_profile
+        if profile is None or not profile.learned:
+            return 0.0
+        current_attributes = {
+            item.attribute for item in state.evidence if item.attribute is not None
+        }
+        exclusions = [item.text.casefold() for item in state.evidence if item.source == "exclusion"]
+        cap = 0.4 if policy is not DEFAULT_RANKING_POLICIES.browsing else 1.0
+        total = 0.0
+        for preference in profile.learned.values():
+            if preference.attribute in current_attributes and preference.attribute != "other":
+                continue
+            value_tokens = tuple(terms(preference.value))
+            if not value_tokens or any(preference.value.casefold() in value for value in exclusions):
+                continue
+            coverage = sum(token in product.token_weights for token in value_tokens) / len(value_tokens)
+            total += 0.35 * preference.confidence * coverage
+        return min(cap, total)
 
     @staticmethod
     def _price_score(product: ProductFeatures, query: CompiledQuery) -> float:
