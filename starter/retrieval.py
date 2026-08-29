@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from starter.dialogue import Evidence, SessionState
+from starter.vector_index import CatalogVectorIndex
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.I)
@@ -33,12 +34,15 @@ FIELD_WEIGHTS = {
     "description": 1.3,
 }
 QUALITY_REVIEW_WEIGHT = 1.05
+VECTOR_ROUTE_WEIGHT = 0.2
+VECTOR_ROUTE_LIMIT = 250
 
 
 @dataclass(frozen=True)
 class SearchResult:
     recommendations: list[tuple[str, float]]
     candidates: list[dict]
+    prompt_tokens: int = 0
 
 
 def _text(value: object) -> str:
@@ -81,10 +85,20 @@ def _phrase_expression(evidence: list[Evidence], limit: int = 4) -> str:
 class CatalogSearch:
     """Multi-route FTS retrieval plus deterministic constraint reranking."""
 
-    def __init__(self, catalog_path: str | Path) -> None:
+    def __init__(
+        self,
+        catalog_path: str | Path,
+        *,
+        vector_index: CatalogVectorIndex | None = None,
+    ) -> None:
         self.catalog_path = Path(catalog_path)
         self.connection = sqlite3.connect(":memory:")
         self._build_index()
+        self.vector_index = vector_index or CatalogVectorIndex(self.catalog_path)
+
+    def close(self) -> None:
+        self.vector_index.close()
+        self.connection.close()
 
     def _build_index(self) -> None:
         cursor = self.connection.cursor()
@@ -138,6 +152,33 @@ class CatalogSearch:
         )
         return [dict(zip(keys, row)) for row in rows]
 
+    def _vector_route(self, rows: list[tuple[int, float]]) -> list[dict]:
+        if not rows:
+            return []
+        row_ids = [row_id for row_id, _ in rows]
+        placeholders = ",".join("?" for _ in row_ids)
+        fetched = self.connection.execute(
+            "SELECT rowid, parent_asin, title, categories, features, details, store, "
+            "description, price, average_rating, rating_number "
+            f"FROM products WHERE rowid IN ({placeholders})",
+            row_ids,
+        ).fetchall()
+        keys = (
+            "parent_asin", "title", "categories", "features", "details", "store",
+            "description", "price", "average_rating", "rating_number",
+        )
+        by_row_id = {
+            int(row[0]): dict(zip(keys, row[1:]))
+            for row in fetched
+        }
+        result: list[dict] = []
+        for row_id, vector_score in rows:
+            product = by_row_id.get(row_id)
+            if product is not None:
+                product["_vector_score"] = vector_score
+                result.append(product)
+        return result
+
     def search(self, state: SessionState, limit: int = 10) -> list[tuple[str, float]]:
         return self.search_with_context(state, limit).recommendations
 
@@ -145,26 +186,49 @@ class CatalogSearch:
         if not state.evidence:
             return SearchResult(recommendations=[], candidates=[])
 
-        routes: list[list[dict]] = []
-        routes.append(self._route(_or_expression([item.text for item in state.evidence]), 350))
+        routes: list[tuple[float, list[dict]]] = []
+        routes.append((1.0, self._route(
+            _or_expression([item.text for item in state.evidence]), 350
+        )))
 
         latest = state.latest_evidence
         if latest is not None:
             phrase_route = self._route(_phrase_expression(state.evidence), 180)
             if phrase_route:
-                routes.append(phrase_route)
+                routes.append((1.0, phrase_route))
 
         if state.category_text:
             category_route = self._route(_or_expression([state.category_text], limit=16), 180)
             if category_route:
-                routes.append(category_route)
+                routes.append((1.0, category_route))
+
+        # Dense retrieval is a reranking signal, not an unconditional source of
+        # candidates.  Admitting vector-only products lets weak semantic matches
+        # receive the full constraint and popularity scores, which can displace
+        # stronger lexical matches even when the vector route has a low weight.
+        lexical_candidate_ids = {
+            str(product["parent_asin"])
+            for _, route in routes
+            for product in route
+        }
+        vector_prompt_tokens = 0
+        if lexical_candidate_ids:
+            vector_result = self.vector_index.search(state.evidence, VECTOR_ROUTE_LIMIT)
+            vector_prompt_tokens = vector_result.prompt_tokens
+            vector_route = [
+                product
+                for product in self._vector_route(vector_result.rows)
+                if str(product["parent_asin"]) in lexical_candidate_ids
+            ]
+            if vector_route:
+                routes.append((VECTOR_ROUTE_WEIGHT, vector_route))
 
         rrf: defaultdict[str, float] = defaultdict(float)
         candidates: dict[str, dict] = {}
-        for route in routes:
+        for route_weight, route in routes:
             for rank, product in enumerate(route, start=1):
                 parent_asin = str(product["parent_asin"])
-                rrf[parent_asin] += 1.0 / (60.0 + rank)
+                rrf[parent_asin] += route_weight / (60.0 + rank)
                 candidates.setdefault(parent_asin, product)
 
         ranked: list[tuple[str, float]] = []
@@ -180,7 +244,11 @@ class CatalogSearch:
             product = dict(candidates[parent_asin])
             product["_rank_score"] = score
             context.append(product)
-        return SearchResult(recommendations=ranked[:limit], candidates=context)
+        return SearchResult(
+            recommendations=ranked[:limit],
+            candidates=context,
+            prompt_tokens=vector_prompt_tokens,
+        )
 
     @staticmethod
     def _constraint_score(

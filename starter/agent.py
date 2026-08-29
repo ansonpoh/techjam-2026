@@ -43,5 +43,8 @@ class Agent:
                 {"parent_asin": parent_asin, "score": round(score, 6)}
                 for parent_asin, score in ranked
             ],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+            "usage": {
+                "prompt_tokens": result.prompt_tokens,
+                "completion_tokens": 0,
+            },
         }
