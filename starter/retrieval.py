@@ -34,8 +34,13 @@ FIELD_WEIGHTS = {
     "description": 1.3,
 }
 QUALITY_REVIEW_WEIGHT = 1.05
-VECTOR_ROUTE_WEIGHT = 0.2
 VECTOR_ROUTE_LIMIT = 250
+# Calibrated from docs/vector_gate_calibration.json. These are the 10th
+# percentiles for winning target cosine and target-to-runner-up margin.
+VECTOR_MIN_SIMILARITY = 0.616618
+VECTOR_MIN_MARGIN = 0.011216
+# Preserve the old RRF vector route's theoretical maximum: 85 * 0.2 / (60 + 1).
+VECTOR_MAX_CONTRIBUTION = 85.0 * 0.2 / 61.0
 
 
 @dataclass(frozen=True)
@@ -202,27 +207,6 @@ class CatalogSearch:
             if category_route:
                 routes.append((1.0, category_route))
 
-        # Dense retrieval is a reranking signal, not an unconditional source of
-        # candidates.  Admitting vector-only products lets weak semantic matches
-        # receive the full constraint and popularity scores, which can displace
-        # stronger lexical matches even when the vector route has a low weight.
-        lexical_candidate_ids = {
-            str(product["parent_asin"])
-            for _, route in routes
-            for product in route
-        }
-        vector_prompt_tokens = 0
-        if lexical_candidate_ids:
-            vector_result = self.vector_index.search(state.semantic_query(), VECTOR_ROUTE_LIMIT)
-            vector_prompt_tokens = vector_result.prompt_tokens
-            vector_route = [
-                product
-                for product in self._vector_route(vector_result.rows)
-                if str(product["parent_asin"]) in lexical_candidate_ids
-            ]
-            if vector_route:
-                routes.append((VECTOR_ROUTE_WEIGHT, vector_route))
-
         rrf: defaultdict[str, float] = defaultdict(float)
         candidates: dict[str, dict] = {}
         for route_weight, route in routes:
@@ -231,13 +215,66 @@ class CatalogSearch:
                 rrf[parent_asin] += route_weight / (60.0 + rank)
                 candidates.setdefault(parent_asin, product)
 
-        ranked: list[tuple[str, float]] = []
+        base_scores: dict[str, float] = {}
+        exact_hard_matches: set[str] = set()
         for parent_asin, product in candidates.items():
             score = 85.0 * rrf[parent_asin]
             score += self._constraint_score(product, state.evidence, state.user_profile)
             score += self._price_score(product, state.evidence)
             score += self._quality_tiebreak(product)
-            ranked.append((parent_asin, score))
+            base_scores[parent_asin] = score
+            if self._exact_hard_constraint_match(product, state.evidence):
+                exact_hard_matches.add(parent_asin)
+
+        # Dense retrieval never admits candidates. It can only adjust lexical
+        # candidates after query, category, absolute-similarity, and margin gates.
+        vector_prompt_tokens = 0
+        vector_scores: dict[str, float] = {}
+        vector_confident = False
+        structured_query = state.semantic_query()
+        if candidates and state.category_text and structured_query:
+            vector_result = self.vector_index.search(structured_query, VECTOR_ROUTE_LIMIT)
+            vector_prompt_tokens = vector_result.prompt_tokens
+            category_vector_route = [
+                product
+                for product in self._vector_route(vector_result.rows)
+                if self._category_match(product, state.category_text)
+            ]
+            if category_vector_route:
+                top_score = float(category_vector_route[0]["_vector_score"])
+                runner_score = (
+                    float(category_vector_route[1]["_vector_score"])
+                    if len(category_vector_route) > 1
+                    else VECTOR_MIN_SIMILARITY
+                )
+                top_id = str(category_vector_route[0]["parent_asin"])
+                vector_confident = (
+                    top_id in candidates
+                    and top_score >= VECTOR_MIN_SIMILARITY
+                    and top_score - runner_score >= VECTOR_MIN_MARGIN
+                )
+                vector_scores = {
+                    str(product["parent_asin"]): float(product["_vector_score"])
+                    for product in category_vector_route
+                    if str(product["parent_asin"]) in candidates
+                }
+
+        ranked: list[tuple[str, float]] = []
+        best_lexical_score = max(base_scores.values(), default=0.0)
+        has_exact_hard_match = bool(exact_hard_matches)
+        for parent_asin, base_score in base_scores.items():
+            similarity = vector_scores.get(parent_asin, 0.0)
+            contribution = self._bounded_vector_contribution(
+                similarity=similarity,
+                base_score=base_score,
+                best_lexical_score=best_lexical_score,
+                vector_confident=vector_confident,
+                has_exact_hard_match=has_exact_hard_match,
+                is_exact_hard_match=parent_asin in exact_hard_matches,
+            )
+            candidates[parent_asin]["_vector_score"] = similarity
+            candidates[parent_asin]["_vector_contribution"] = contribution
+            ranked.append((parent_asin, base_score + contribution))
         ranked.sort(key=lambda item: (-item[1], item[0]))
         context: list[dict] = []
         for parent_asin, score in ranked[:100]:
@@ -248,6 +285,54 @@ class CatalogSearch:
             recommendations=ranked[:limit],
             candidates=context,
             prompt_tokens=vector_prompt_tokens,
+        )
+
+    @staticmethod
+    def _category_match(product: dict, requested_category: str) -> bool:
+        requested = set(terms(requested_category))
+        product_categories = set(terms(str(product.get("categories") or "")))
+        return bool(requested) and requested.issubset(product_categories)
+
+    @staticmethod
+    def _bounded_vector_contribution(
+        *,
+        similarity: float,
+        base_score: float,
+        best_lexical_score: float,
+        vector_confident: bool,
+        has_exact_hard_match: bool,
+        is_exact_hard_match: bool,
+    ) -> float:
+        if (
+            not vector_confident
+            or similarity < VECTOR_MIN_SIMILARITY
+            or best_lexical_score - base_score > VECTOR_MAX_CONTRIBUTION
+            or (has_exact_hard_match and not is_exact_hard_match)
+        ):
+            return 0.0
+        return min(
+            VECTOR_MAX_CONTRIBUTION,
+            max(0.0, similarity) * VECTOR_MAX_CONTRIBUTION,
+        )
+
+    @staticmethod
+    def _exact_hard_constraint_match(product: dict, evidence: list[Evidence]) -> bool:
+        hard_constraints = [
+            item
+            for item in evidence
+            if item.source in {"hard_constraint", "override"}
+            and not BUDGET_RE.search(item.text)
+            and terms(item.text)
+        ]
+        if not hard_constraints:
+            return False
+        normalized_fields = [
+            " ".join(terms(str(product.get(field) or "")))
+            for field in FIELD_WEIGHTS
+        ]
+        return all(
+            any(" ".join(terms(item.text)) in value for value in normalized_fields)
+            for item in hard_constraints
         )
 
     @staticmethod

@@ -12,8 +12,13 @@ from unittest.mock import patch
 import numpy as np
 
 from starter.dialogue import Evidence, SessionState
-from starter.retrieval import CatalogSearch
-from starter.vector_index import CatalogVectorIndex, catalog_sha256
+from starter.retrieval import (
+    CatalogSearch,
+    VECTOR_MAX_CONTRIBUTION,
+    VECTOR_MIN_MARGIN,
+    VECTOR_MIN_SIMILARITY,
+)
+from starter.vector_index import CatalogVectorIndex, VectorSearchResult, catalog_sha256
 from scripts.generate_catalog_embeddings import generate
 
 
@@ -72,6 +77,19 @@ class BatchEmbeddings:
 class BatchClient:
     def __init__(self, interrupt_on_call: int | None = None) -> None:
         self.embeddings = BatchEmbeddings(interrupt_on_call)
+
+
+class StubVectorIndex:
+    def __init__(self, rows: list[tuple[int, float]]) -> None:
+        self.rows = rows
+        self.calls: list[str | None] = []
+
+    def search(self, query: str | None, limit: int) -> VectorSearchResult:
+        self.calls.append(query)
+        return VectorSearchResult(rows=self.rows[:limit])
+
+    def close(self) -> None:
+        pass
 
 
 def write_catalog(path: Path) -> None:
@@ -210,6 +228,74 @@ class CatalogVectorIndexTest(unittest.TestCase):
             self.assertEqual(result.prompt_tokens, 7)
             search.close()
 
+    def test_similarity_margin_gate_disables_ambiguous_vector_scores(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            catalog = Path(directory_name) / "catalog.jsonl"
+            write_catalog(catalog)
+            vector_index = StubVectorIndex([(1, 0.700), (2, 0.695), (3, 0.100)])
+            search = CatalogSearch(catalog, vector_index=vector_index)
+            state = SessionState(user_profile={})
+            state.category_text = "Shoes"
+            state.evidence.extend([
+                Evidence("Shoes", 1.4, "category", 1),
+                Evidence("shoe boot", 2.5, "clarification", 2),
+            ])
+
+            result = search.search_with_context(state, limit=3)
+
+            self.assertEqual(len(vector_index.calls), 1)
+            self.assertTrue(result.candidates)
+            self.assertTrue(all(
+                product["_vector_contribution"] == 0.0
+                for product in result.candidates
+            ))
+            search.close()
+
+    def test_vector_gates_and_contribution_are_bounded(self) -> None:
+        common = {
+            "base_score": 10.0,
+            "best_lexical_score": 10.0,
+            "vector_confident": True,
+            "has_exact_hard_match": False,
+            "is_exact_hard_match": False,
+        }
+        lower = CatalogSearch._bounded_vector_contribution(similarity=0.70, **common)
+        higher = CatalogSearch._bounded_vector_contribution(similarity=0.90, **common)
+        self.assertGreater(higher, lower)
+        self.assertLessEqual(higher, VECTOR_MAX_CONTRIBUTION)
+        self.assertEqual(CatalogSearch._bounded_vector_contribution(
+            similarity=VECTOR_MIN_SIMILARITY - 0.001, **common
+        ), 0.0)
+        self.assertEqual(CatalogSearch._bounded_vector_contribution(
+            similarity=0.90,
+            **{**common, "base_score": 10.0 - VECTOR_MAX_CONTRIBUTION - 0.001},
+        ), 0.0)
+        self.assertEqual(CatalogSearch._bounded_vector_contribution(
+            similarity=0.90,
+            **{**common, "has_exact_hard_match": True},
+        ), 0.0)
+
+    def test_category_and_exact_hard_constraint_guards(self) -> None:
+        shoe = {"categories": "Clothing Shoes", "features": "wide width"}
+        shirt = {"categories": "Clothing Shirts", "features": "wide width"}
+        hard = [Evidence("wide width", 3.8, "hard_constraint", 1)]
+
+        self.assertTrue(CatalogSearch._category_match(shoe, "Shoes"))
+        self.assertFalse(CatalogSearch._category_match(shirt, "Shoes"))
+        self.assertTrue(CatalogSearch._exact_hard_constraint_match(shoe, hard))
+        self.assertFalse(CatalogSearch._exact_hard_constraint_match(
+            {**shoe, "features": "standard width"}, hard
+        ))
+
+    def test_runtime_thresholds_match_calibration_artifact(self) -> None:
+        calibration = json.loads(
+            (Path(__file__).resolve().parents[1] / "docs" / "vector_gate_calibration.json")
+            .read_text(encoding="utf-8")
+        )
+        selected = calibration["selected_thresholds"]
+        self.assertEqual(VECTOR_MIN_SIMILARITY, selected["minimum_cosine_similarity"])
+        self.assertEqual(VECTOR_MIN_MARGIN, selected["minimum_top_margin"])
+
     def test_empty_lexical_pool_skips_vector_candidate_expansion(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -248,7 +334,11 @@ class CatalogVectorIndexTest(unittest.TestCase):
             )
             search = CatalogSearch(catalog, vector_index=index)
             state = SessionState(user_profile={})
-            state.evidence.append(Evidence("leather trail boot", 3.0, "clarification", 1))
+            state.category_text = "Shoes"
+            state.evidence.extend([
+                Evidence("Shoes", 1.4, "category", 1),
+                Evidence("leather trail boot", 3.0, "clarification", 1),
+            ])
 
             result = search.search_with_context(state, limit=3)
 

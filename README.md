@@ -110,9 +110,12 @@ The command uses `text-embedding-3-small` with 256 dimensions, resumes from a
 completed batch after interruption, and writes an ignored approximately 49 MiB
 `data/catalog_embeddings.npy` file plus checked metadata. At runtime, active
 intent is filtered and rendered as one structured category/features/use-case
-query, embedded once, and compared with NumPy before fusion with the keyword,
-phrase, and category routes. Category-only or still-exploring queries skip the
-vector route. `OPENAI_API_KEY` may be supplied through
+query and embedded once. Raw cosine similarity can then make a capped adjustment
+among close lexical candidates only when calibrated similarity and margin gates
+pass and the candidate matches the requested category. Exact hard-constraint
+matches and lexical leads larger than the semantic cap are protected.
+Category-only or still-exploring queries skip the vector route.
+`OPENAI_API_KEY` may be supplied through
 the environment or an ignored `.env` file; the existing `OPENAI_APIKEY` alias
 is also accepted for compatibility. If credentials, network access, or
 the validated artifact are unavailable, the agent continues with its existing
@@ -122,6 +125,13 @@ On hosts where Python 3.13 rejects an older enterprise CA solely because its
 Basic Constraints extension is not marked critical, set
 `OPENAI_SYSTEM_CA_COMPAT=1`. This retains certificate-chain and hostname
 verification while disabling only Python's X.509 strict compatibility flag.
+
+The checked calibration artifact is `docs/vector_gate_calibration.json`. It can
+be regenerated without running the evaluator:
+
+```bash
+python -m scripts.calibrate_vector_gates
+```
 
 For a turn-by-turn inspection of one labelled development session:
 
