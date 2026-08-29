@@ -32,6 +32,7 @@ FIELD_WEIGHTS = {
     "store": 1.5,
     "description": 1.3,
 }
+QUALITY_REVIEW_WEIGHT = 1.05
 
 
 @dataclass(frozen=True)
@@ -266,7 +267,10 @@ class CatalogSearch:
             count = max(0, int(float(product.get("rating_number") or 0)))
         except (TypeError, ValueError):
             count = 0
-        # Purchase targets are more likely to be established products.  The
-        # logarithm supplies a bounded commerce prior without allowing raw
-        # review counts to overwhelm textual constraint matching.
-        return min(max(rating, 0.0), 5.0) * 0.02 + math.log1p(count) * 1.20
+        # Purchase targets are more likely to be established products, but a
+        # moderated popularity prior is less likely to outweigh an exact
+        # hard-constraint match.
+        return (
+            min(max(rating, 0.0), 5.0) * 0.02
+            + math.log1p(count) * QUALITY_REVIEW_WEIGHT
+        )

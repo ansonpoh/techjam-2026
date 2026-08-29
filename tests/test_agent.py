@@ -8,7 +8,7 @@ from pathlib import Path
 from starter.agent import Agent
 from starter.dialogue import SessionState
 from starter.question_planner import AdaptiveQuestionPlanner
-from starter.retrieval import CatalogSearch, Evidence
+from starter.retrieval import CatalogSearch, Evidence, QUALITY_REVIEW_WEIGHT
 
 
 class DialogueStateTest(unittest.TestCase):
@@ -59,6 +59,7 @@ class AdaptiveQuestionPlannerTest(unittest.TestCase):
     def test_question_attribute_changes_with_candidate_differences(self) -> None:
         planner = AdaptiveQuestionPlanner()
         material_state = SessionState(user_profile={})
+        material_state.asked_attributes.extend(["other", "other"])
         material_candidates = [
             self._candidate("cotton shirt", 20.0),
             self._candidate("leather shirt", 14.0),
@@ -69,6 +70,7 @@ class AdaptiveQuestionPlannerTest(unittest.TestCase):
         )
 
         color_state = SessionState(user_profile={})
+        color_state.asked_attributes.extend(["other", "other"])
         color_candidates = [
             self._candidate("red shirt", 20.0),
             self._candidate("blue shirt", 14.0),
@@ -82,8 +84,33 @@ class AdaptiveQuestionPlannerTest(unittest.TestCase):
         self.assertIn("red", color_question)
         self.assertNotEqual(material_question, color_question)
 
+    def test_early_question_prioritizes_must_have_without_repeating_boundary(self) -> None:
+        planner = AdaptiveQuestionPlanner()
+        state = SessionState(user_profile={})
+        candidates = [
+            self._candidate("cotton shirt", 20.0),
+            self._candidate("leather shirt", 14.0),
+        ]
+
+        attribute, _ = planner.choose(state, candidates, 1)
+        self.assertEqual(attribute, "other")
+
+        state.no_preference_attributes.add("other")
+        next_attribute, _ = planner.choose(state, candidates, 2)
+        self.assertNotEqual(next_attribute, "other")
+
 
 class AgentRetrievalTest(unittest.TestCase):
+    def test_popularity_weight_is_reduced_and_bounded(self) -> None:
+        obscure = CatalogSearch._quality_tiebreak(
+            {"average_rating": 4.0, "rating_number": 1}
+        )
+        popular = CatalogSearch._quality_tiebreak(
+            {"average_rating": 4.0, "rating_number": 10000}
+        )
+        self.assertLess(QUALITY_REVIEW_WEIGHT, 1.20)
+        self.assertLess(popular - obscure, 9.5)
+
     def test_budget_proximity_is_scored_without_a_network_model(self) -> None:
         evidence = [Evidence("budget around $50", 3.0, "clarification", 2)]
         close = CatalogSearch._price_score({"price": "52"}, evidence)
@@ -112,7 +139,11 @@ class AgentRetrievalTest(unittest.TestCase):
             )
             agent = Agent(catalog)
             agent.reset("s", {})
-            agent.respond("s", "I'm looking for Shoes, but I'm still exploring.", 1, 10)
+            first_response = agent.respond(
+                "s", "I'm looking for Shoes, but I'm still exploring.", 1, 10
+            )
+            self.assertEqual(len(first_response["recommendations"]), 1)
+
             response = agent.respond(
                 "s", "For that, what matters is: full grain leather; wide width.", 2, 10
             )

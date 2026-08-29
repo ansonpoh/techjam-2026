@@ -34,7 +34,8 @@ class Agent:
         ask_attribute, message = self.question_planner.choose(
             state, result.candidates, turn
         )
-        ranked = result.recommendations
+        
+        ranked = result.recommendations[:1] if turn == 1 else result.recommendations
         return {
             "message": message,
             "ask_attribute": ask_attribute,

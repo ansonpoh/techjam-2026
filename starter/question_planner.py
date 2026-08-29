@@ -33,6 +33,23 @@ FACET_PATTERNS = {
     ),
 }
 
+# Information gain is only useful when the customer is likely to have the
+# requested detail. Product features, material, color, and price are common in
+# shopping intent; catalog taxonomy and merchant names are much less likely to
+# be meaningful customer preferences.
+ANSWERABILITY_PRIORS = {
+    "feature": 1.00,
+    "material": 0.95,
+    "color": 0.90,
+    "budget": 0.80,
+    "size": 0.70,
+    "style": 0.65,
+    "use_case": 0.60,
+    "category": 0.30,
+    "brand": 0.20,
+}
+EARLY_OPEN_QUESTION_LIMIT = 2
+
 
 @dataclass(frozen=True)
 class FacetScore:
@@ -65,6 +82,17 @@ class AdaptiveQuestionPlanner:
         if turn >= 10 or not candidates:
             return None, "These are my best matches based on everything you've shared."
 
+        # Early in an uncertain search, a broad must-have question has the
+        # highest chance of eliciting one of the customer's actual constraints.
+        # Cap it to avoid repetition and honor an explicit no-preference reply.
+        if (
+            turn <= 3
+            and "other" not in state.no_preference_attributes
+            and state.asked_attributes.count("other") < EARLY_OPEN_QUESTION_LIMIT
+        ):
+            state.record_question("other")
+            return "other", self._word_question("other", ())
+
         facet_scores = self._score_facets(candidates)
         available = [
             facet
@@ -77,7 +105,9 @@ class AdaptiveQuestionPlanner:
         adjusted = [
             FacetScore(
                 facet.attribute,
-                facet.information_gain / (1.0 + 0.85 * state.asked_attributes.count(facet.attribute)),
+                facet.information_gain
+                * ANSWERABILITY_PRIORS.get(facet.attribute, 0.50)
+                / (1.0 + 0.85 * state.asked_attributes.count(facet.attribute)),
                 facet.examples,
             )
             for facet in available
