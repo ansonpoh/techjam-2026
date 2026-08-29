@@ -9,22 +9,32 @@ from pathlib import Path
 
 from starter.dialogue import Evidence, SessionState
 from starter.product_features import (
+    BUDGET_RE,
     FIELD_WEIGHTS,
     CompiledQuery,
     ProductFeatures,
     ProductFeatureStore,
     terms,
 )
+from starter.vector_index import CatalogVectorIndex
 
 
 QUALITY_REVIEW_WEIGHT = 1.05
 FEATURE_CACHE_SIZE = 5_000
+VECTOR_ROUTE_LIMIT = 250
+# Calibrated from docs/vector_gate_calibration.json. These are the 10th
+# percentiles for winning target cosine and target-to-runner-up margin.
+VECTOR_MIN_SIMILARITY = 0.616618
+VECTOR_MIN_MARGIN = 0.011216
+# Preserve the old RRF vector route's theoretical maximum: 85 * 0.2 / (60 + 1).
+VECTOR_MAX_CONTRIBUTION = 85.0 * 0.2 / 61.0
 
 
 @dataclass(frozen=True)
 class SearchResult:
     recommendations: list[tuple[str, float]]
     candidates: list[dict]
+    prompt_tokens: int = 0
 
 
 def _text(value: object) -> str:
@@ -68,11 +78,18 @@ class CatalogSearch:
         self,
         catalog_path: str | Path,
         feature_cache_size: int = FEATURE_CACHE_SIZE,
+        *,
+        vector_index: CatalogVectorIndex | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
         self.connection = sqlite3.connect(":memory:")
         self.feature_store = ProductFeatureStore(max_size=feature_cache_size)
         self._build_index()
+        self.vector_index = vector_index or CatalogVectorIndex(self.catalog_path)
+
+    def close(self) -> None:
+        self.vector_index.close()
+        self.connection.close()
 
     def _build_index(self) -> None:
         cursor = self.connection.cursor()
@@ -150,6 +167,33 @@ class CatalogSearch:
             products.append(product)
         return products
 
+    def _vector_route(self, rows: list[tuple[int, float]]) -> list[dict]:
+        if not rows:
+            return []
+        row_ids = [row_id for row_id, _ in rows]
+        placeholders = ",".join("?" for _ in row_ids)
+        fetched = self.connection.execute(
+            "SELECT rowid, parent_asin, title, categories, features, details, store, "
+            "description, price, average_rating, rating_number "
+            f"FROM products WHERE rowid IN ({placeholders})",
+            row_ids,
+        ).fetchall()
+        keys = (
+            "parent_asin", "title", "categories", "features", "details", "store",
+            "description", "price", "average_rating", "rating_number",
+        )
+        by_row_id = {
+            int(row[0]): dict(zip(keys, row[1:]))
+            for row in fetched
+        }
+        result: list[dict] = []
+        for row_id, vector_score in rows:
+            product = by_row_id.get(row_id)
+            if product is not None:
+                product["_vector_score"] = vector_score
+                result.append(product)
+        return result
+
     def search(self, state: SessionState, limit: int = 10) -> list[tuple[str, float]]:
         return self.search_with_context(state, limit).recommendations
 
@@ -157,44 +201,156 @@ class CatalogSearch:
         if not state.evidence:
             return SearchResult(recommendations=[], candidates=[])
 
-        routes: list[list[dict]] = []
-        routes.append(self._route(_or_expression([item.text for item in state.evidence]), 350))
+        routes: list[tuple[float, list[dict]]] = []
+        routes.append((1.0, self._route(
+            _or_expression([item.text for item in state.evidence]), 350
+        )))
 
         latest = state.latest_evidence
         if latest is not None:
             phrase_route = self._route(_phrase_expression(state.evidence), 180)
             if phrase_route:
-                routes.append(phrase_route)
+                routes.append((1.0, phrase_route))
 
         if state.category_text:
             category_route = self._route(_or_expression([state.category_text], limit=16), 180)
             if category_route:
-                routes.append(category_route)
+                routes.append((1.0, category_route))
 
         rrf: defaultdict[str, float] = defaultdict(float)
         candidates: dict[str, dict] = {}
-        for route in routes:
+        for route_weight, route in routes:
             for rank, product in enumerate(route, start=1):
                 parent_asin = str(product["parent_asin"])
-                rrf[parent_asin] += 1.0 / (60.0 + rank)
+                rrf[parent_asin] += route_weight / (60.0 + rank)
                 candidates.setdefault(parent_asin, product)
 
         query = self.feature_store.compile_query(state.evidence, state.user_profile)
-        ranked: list[tuple[str, float]] = []
+        base_scores: dict[str, float] = {}
+        exact_hard_matches: set[str] = set()
         for parent_asin, product in candidates.items():
             features = product["_features"]
             score = 85.0 * rrf[parent_asin]
             score += self._constraint_score(features, query)
             score += self._price_score(features, query)
             score += self._quality_tiebreak(features)
-            ranked.append((parent_asin, score))
+            base_scores[parent_asin] = score
+            if self._exact_hard_constraint_match(features, state.evidence):
+                exact_hard_matches.add(parent_asin)
+
+        # Dense retrieval never admits candidates. It can only adjust lexical
+        # candidates after query, category, absolute-similarity, and margin gates.
+        vector_prompt_tokens = 0
+        vector_scores: dict[str, float] = {}
+        vector_confident = False
+        structured_query = state.semantic_query()
+        if candidates and state.category_text and structured_query:
+            vector_result = self.vector_index.search(structured_query, VECTOR_ROUTE_LIMIT)
+            vector_prompt_tokens = vector_result.prompt_tokens
+            category_vector_route = [
+                product
+                for product in self._vector_route(vector_result.rows)
+                if self._category_match(product, state.category_text)
+            ]
+            if category_vector_route:
+                top_score = float(category_vector_route[0]["_vector_score"])
+                runner_score = (
+                    float(category_vector_route[1]["_vector_score"])
+                    if len(category_vector_route) > 1
+                    else VECTOR_MIN_SIMILARITY
+                )
+                top_id = str(category_vector_route[0]["parent_asin"])
+                vector_confident = (
+                    top_id in candidates
+                    and top_score >= VECTOR_MIN_SIMILARITY
+                    and top_score - runner_score >= VECTOR_MIN_MARGIN
+                )
+                vector_scores = {
+                    str(product["parent_asin"]): float(product["_vector_score"])
+                    for product in category_vector_route
+                    if str(product["parent_asin"]) in candidates
+                }
+
+        ranked: list[tuple[str, float]] = []
+        best_lexical_score = max(base_scores.values(), default=0.0)
+        has_exact_hard_match = bool(exact_hard_matches)
+        for parent_asin, base_score in base_scores.items():
+            similarity = vector_scores.get(parent_asin, 0.0)
+            contribution = self._bounded_vector_contribution(
+                similarity=similarity,
+                base_score=base_score,
+                best_lexical_score=best_lexical_score,
+                vector_confident=vector_confident,
+                has_exact_hard_match=has_exact_hard_match,
+                is_exact_hard_match=parent_asin in exact_hard_matches,
+            )
+            candidates[parent_asin]["_vector_score"] = similarity
+            candidates[parent_asin]["_vector_contribution"] = contribution
+            ranked.append((parent_asin, base_score + contribution))
         ranked.sort(key=lambda item: (-item[1], item[0]))
         context: list[dict] = []
         for parent_asin, score in ranked[:100]:
             product = dict(candidates[parent_asin])
             product["_rank_score"] = score
             context.append(product)
-        return SearchResult(recommendations=ranked[:limit], candidates=context)
+        return SearchResult(
+            recommendations=ranked[:limit],
+            candidates=context,
+            prompt_tokens=vector_prompt_tokens,
+        )
+
+    @staticmethod
+    def _category_match(product: dict, requested_category: str) -> bool:
+        requested = set(terms(requested_category))
+        product_categories = set(terms(str(product.get("categories") or "")))
+        return bool(requested) and requested.issubset(product_categories)
+
+    @staticmethod
+    def _bounded_vector_contribution(
+        *,
+        similarity: float,
+        base_score: float,
+        best_lexical_score: float,
+        vector_confident: bool,
+        has_exact_hard_match: bool,
+        is_exact_hard_match: bool,
+    ) -> float:
+        if (
+            not vector_confident
+            or similarity < VECTOR_MIN_SIMILARITY
+            or best_lexical_score - base_score > VECTOR_MAX_CONTRIBUTION
+            or (has_exact_hard_match and not is_exact_hard_match)
+        ):
+            return 0.0
+        return min(
+            VECTOR_MAX_CONTRIBUTION,
+            max(0.0, similarity) * VECTOR_MAX_CONTRIBUTION,
+        )
+
+    @staticmethod
+    def _exact_hard_constraint_match(
+        product: ProductFeatures | dict, evidence: list[Evidence]
+    ) -> bool:
+        hard_constraints = [
+            item
+            for item in evidence
+            if item.source in {"hard_constraint", "override"}
+            and not BUDGET_RE.search(item.text)
+            and terms(item.text)
+        ]
+        if not hard_constraints:
+            return False
+        if isinstance(product, ProductFeatures):
+            normalized_text = product.normalized_text
+        else:
+            normalized_text = "\x1f".join(
+                " ".join(terms(str(product.get(field) or "")))
+                for field in FIELD_WEIGHTS
+            )
+        return all(
+            " ".join(terms(item.text)) in normalized_text
+            for item in hard_constraints
+        )
 
     @staticmethod
     def _constraint_score(product: ProductFeatures, query: CompiledQuery) -> float:

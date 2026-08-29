@@ -1,0 +1,45 @@
+{
+  "created_at": "2026-08-29T09:16:35.093554+00:00",
+  "method": {
+    "sample": "deterministic evenly spaced catalog products with descriptive fields",
+    "similarity_gate": "10th percentile of target cosine when target beats every alternative",
+    "margin_gate": "10th percentile of target-minus-best-alternative margin for those wins",
+    "evaluator_run": false
+  },
+  "sample_count": 64,
+  "target_wins": 11,
+  "distributions": {
+    "target_cosine": {
+      "p05": 0.442223,
+      "p10": 0.482009,
+      "p50": 0.580098,
+      "p90": 0.688072,
+      "p95": 0.739298
+    },
+    "best_alternative_cosine": {
+      "p05": 0.590296,
+      "p10": 0.612698,
+      "p50": 0.661104,
+      "p90": 0.715862,
+      "p95": 0.736397
+    },
+    "winning_target_cosine": {
+      "p05": 0.614654,
+      "p10": 0.616618,
+      "p50": 0.672206,
+      "p90": 0.750069,
+      "p95": 0.775873
+    },
+    "winning_margin": {
+      "p05": 0.007499,
+      "p10": 0.011216,
+      "p50": 0.022562,
+      "p90": 0.086902,
+      "p95": 0.106929
+    }
+  },
+  "selected_thresholds": {
+    "minimum_cosine_similarity": 0.616618,
+    "minimum_top_margin": 0.011216
+  }
+}

@@ -5,6 +5,10 @@ __pycache__/
 results.json
 results-*.json
 data/catalog.jsonl
+data/catalog_embeddings.npy
+data/catalog_embeddings.meta.json
+data/catalog_embeddings.npy.partial.npy
+data/catalog_embeddings.npy.progress.json
 data/releases/
 # Organizer-only code, private evaluation data, manifests, and build reports.
 organizer/
