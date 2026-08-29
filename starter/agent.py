@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from starter.config import AgentConfig, DEFAULT_AGENT_CONFIG
 from starter.dialogue import SessionState
 from starter.question_planner import AdaptiveQuestionPlanner
 from starter.ranking import DEFAULT_RANKING_POLICIES, RankingPolicies
@@ -15,13 +16,16 @@ class Agent:
         catalog_path: str | Path = "data/catalog.jsonl",
         feature_cache_size: int = FEATURE_CACHE_SIZE,
         *,
+        config: AgentConfig = DEFAULT_AGENT_CONFIG,
         ranking_policies: RankingPolicies = DEFAULT_RANKING_POLICIES,
         vector_index: VectorIndex | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
+        self.config = config
         self.search = CatalogSearch(
             self.catalog_path,
             feature_cache_size=feature_cache_size,
+            enable_vector_reranker=config.enable_vector_reranker,
             ranking_policies=ranking_policies,
             vector_index=vector_index,
         )
@@ -52,7 +56,10 @@ class Agent:
             state, result.candidates, turn
         )
         
-        ranked = result.recommendations[:1] if turn == 1 else result.recommendations
+        recommendation_limit = self.config.recommendation_policy.limit_for(
+            turn, top_k
+        )
+        ranked = result.recommendations[:recommendation_limit]
         return {
             "message": message,
             "ask_attribute": ask_attribute,

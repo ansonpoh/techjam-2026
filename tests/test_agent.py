@@ -4,8 +4,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from starter.agent import Agent
+from starter.config import (
+    AgentConfig,
+    FULL_BREADTH_POLICY,
+    RecommendationPolicy,
+)
 from starter.dialogue import Evidence, SessionState
 from starter.product_features import FIELD_WEIGHTS, ProductFeatureStore, terms
 from starter.question_planner import AdaptiveQuestionPlanner
@@ -450,6 +456,40 @@ class AgentRetrievalTest(unittest.TestCase):
             self.assertEqual(browsing.ranking_mode, RankingMode.BROWSING)
             self.assertEqual(buying.ranking_mode, RankingMode.BUYING)
 
+    def test_default_recommendation_policy_stages_early_breadth(self) -> None:
+        policy = RecommendationPolicy()
+
+        self.assertEqual([policy.limit_for(turn, 10) for turn in range(1, 5)], [1, 1, 3, 10])
+        self.assertEqual(policy.limit_for(3, 2), 2)
+
+    def test_full_breadth_policy_is_available_for_controlled_comparisons(self) -> None:
+        config = AgentConfig(recommendation_policy=FULL_BREADTH_POLICY)
+
+        self.assertEqual(config.recommendation_policy.limit_for(1, 10), 10)
+
+    def test_default_agent_does_not_construct_vector_index(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = self._write_catalog(directory)
+            with patch("starter.retrieval.CatalogVectorIndex") as vector_type:
+                agent = Agent(catalog)
+                try:
+                    self.assertIsNone(agent.search.vector_index)
+                    vector_type.assert_not_called()
+                finally:
+                    agent.close()
+
+    def test_vector_reranker_requires_explicit_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = self._write_catalog(directory)
+            config = AgentConfig(enable_vector_reranker=True)
+            with patch("starter.retrieval.CatalogVectorIndex") as vector_type:
+                agent = Agent(catalog, config=config)
+                try:
+                    vector_type.assert_called_once_with(catalog)
+                    self.assertIs(agent.search.vector_index, vector_type.return_value)
+                finally:
+                    agent.close()
+
     def test_conversation_reranks_exact_constraint_match(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             catalog = self._write_catalog(directory)
@@ -463,6 +503,7 @@ class AgentRetrievalTest(unittest.TestCase):
             response = agent.respond(
                 "s", "For that, what matters is: full grain leather; wide width.", 2, 10
             )
+            self.assertEqual(len(response["recommendations"]), 1)
             self.assertEqual(response["recommendations"][0]["parent_asin"], "B")
 
     def test_cache_capacity_does_not_change_recommendations(self) -> None:

@@ -88,6 +88,7 @@ class CatalogSearch:
         catalog_path: str | Path,
         feature_cache_size: int = FEATURE_CACHE_SIZE,
         *,
+        enable_vector_reranker: bool = False,
         ranking_policies: RankingPolicies = DEFAULT_RANKING_POLICIES,
         intent_router: IntentRouter | None = None,
         vector_index: VectorIndex | None = None,
@@ -98,10 +99,13 @@ class CatalogSearch:
         self.ranking_policies = ranking_policies
         self.intent_router = intent_router or IntentRouter()
         self._build_index()
-        self.vector_index = vector_index or CatalogVectorIndex(self.catalog_path)
+        self.vector_index = vector_index
+        if self.vector_index is None and enable_vector_reranker:
+            self.vector_index = CatalogVectorIndex(self.catalog_path)
 
     def close(self) -> None:
-        self.vector_index.close()
+        if self.vector_index is not None:
+            self.vector_index.close()
         self.connection.close()
 
     def _build_index(self) -> None:
@@ -274,6 +278,7 @@ class CatalogSearch:
         structured_query = state.semantic_query()
         if (
             policy.vector_scale > 0.0
+            and self.vector_index is not None
             and candidates
             and state.category_text
             and structured_query

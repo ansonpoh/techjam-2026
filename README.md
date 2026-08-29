@@ -52,7 +52,7 @@ This repository now includes a stateful, offline-first conversational search
 agent. It uses only the Python standard library and requires no API key, model
 download, or network access during evaluation.
 
-The pipeline has five stages:
+The pipeline has six stages:
 
 1. `starter.dialogue.SessionState` turns each message into weighted positive
    evidence, tracks requested attributes, ignores explicit no-preference
@@ -72,13 +72,17 @@ The pipeline has five stages:
    features. It selects the facet with the greatest estimated information gain
    and generates the question from observed candidate values. There is no
    fixed question order or per-attribute question-text dictionary.
+6. An immutable recommendation policy stages output breadth as confidence
+   accumulates: one result on turns 1-2, up to three on turn 3, and up to the
+   requested Top-K afterward. The schedule is runtime configuration and never
+   reads evaluator scenario labels or target identifiers.
 
 The current public-set results are:
 
 | Agent | Hit Rate@10 | MRR | MTTC | Efficiency | TechnicalScore |
 |---|---:|---:|---:|---:|---:|
 | Released BM25 baseline | 0.125 | 0.068034 | 9.81 | 0.119 | 0.106710 |
-| Stateful adaptive multi-route agent | **0.990** | **0.865117** | **2.09** | **0.891** | **0.932735** |
+| Stateful adaptive multi-route agent | **0.990** | **0.932181** | **2.275** | **0.8725** | **0.949154** |
 
 Scenario Hit Rate@10 is `0.9875` for Buying, `0.966667` for Intent Override,
 and `1.0` for Browsing and Boundary. These are development-set measurements,
@@ -96,11 +100,22 @@ python -m evaluator.local_evaluator
 
 ### Optional Semantic Vector Route
 
-The retrieval pipeline can add exact in-memory cosine search over normalized
-OpenAI catalog embeddings. Generate the local artifact once with:
+The evaluated default is deterministic and offline: it does not construct a
+vector index or call an embedding API. The retrieval pipeline can optionally
+add exact in-memory cosine search over normalized OpenAI catalog embeddings.
+Generate the local artifact once with:
 
 ```bash
 python -m scripts.generate_catalog_embeddings
+```
+
+Then opt into the experiment explicitly:
+
+```python
+from starter.agent import Agent
+from starter.config import AgentConfig
+
+agent = Agent(config=AgentConfig(enable_vector_reranker=True))
 ```
 
 The command uses `text-embedding-3-small` with 256 dimensions, resumes from a
