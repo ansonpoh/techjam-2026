@@ -86,7 +86,7 @@ class SessionState:
         match = NEED_RE.search(message)
         if match:
             for value in _split_constraints(match.group(1)):
-                self._add(value, 4.5, "override", turn)
+                self._add(value, 6.0, "override", turn)  # Boosted weight for faster recovery
             return
 
         match = REQUIREMENT_RE.search(message)
