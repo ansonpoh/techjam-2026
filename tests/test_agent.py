@@ -529,6 +529,55 @@ class AgentRetrievalTest(unittest.TestCase):
             self.assertEqual(len(response["recommendations"]), 1)
             self.assertEqual(response["recommendations"][0]["parent_asin"], "B")
 
+    def test_exact_hard_constraint_tiers_dominate_numeric_score(self) -> None:
+        rows = [
+            {
+                "parent_asin": "NONE", "title": "Black trail leather shoe",
+                "categories": ["Shoes"], "features": ["standard width"],
+                "details": {}, "store": "Example", "description": [], "price": 40,
+                "average_rating": 5.0, "rating_number": 1000,
+            },
+            {
+                "parent_asin": "SOME", "title": "Black leather shoe",
+                "categories": ["Shoes"], "features": ["standard width"],
+                "details": {}, "store": "Example", "description": [], "price": 40,
+                "average_rating": 4.0, "rating_number": 100,
+            },
+            {
+                "parent_asin": "ALL", "title": "Black leather shoe",
+                "categories": ["Shoes"], "features": ["wide width"],
+                "details": {}, "store": "Example", "description": [], "price": 40,
+                "average_rating": 3.0, "rating_number": 1,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "catalog.jsonl"
+            catalog.write_text(
+                "".join(json.dumps(row) + "\n" for row in rows),
+                encoding="utf-8",
+            )
+            search = CatalogSearch(catalog)
+            state = SessionState(user_profile={})
+            state.evidence.extend([
+                Evidence("Shoes", 1.4, "category", 1),
+                Evidence("black leather", 3.8, "hard_constraint", 1),
+                Evidence("wide width", 3.8, "hard_constraint", 1),
+            ])
+            inflated_quality = {"NONE": 1_000.0, "SOME": 500.0, "ALL": 0.0}
+            try:
+                with patch.object(
+                    CatalogSearch,
+                    "_quality_tiebreak",
+                    side_effect=lambda product: inflated_quality[product.parent_asin],
+                ):
+                    ranked = search.search(state, limit=3)
+            finally:
+                search.close()
+
+        self.assertEqual([parent_asin for parent_asin, _ in ranked], [
+            "ALL", "SOME", "NONE",
+        ])
+
     def test_cache_capacity_does_not_change_recommendations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             catalog = self._write_catalog(directory)

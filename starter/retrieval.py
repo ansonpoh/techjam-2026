@@ -44,6 +44,10 @@ PHRASE_ROUTE_WEIGHT = 1.0
 CATEGORY_ROUTE_WEIGHT = 1.0
 HARD_CONSTRAINT_AND_ROUTE_WEIGHT = 3.0
 
+# FTS5 column order: parent_asin, title, categories, features, details, store,
+# description, price, average_rating, rating_number.
+BM25_COLUMN_WEIGHTS = (0.0, 4.0, 4.0, 7.0, 7.0, 1.0, 1.0, 0.0, 0.0, 0.0)
+
 
 @dataclass(frozen=True)
 class SearchResult:
@@ -193,11 +197,12 @@ class CatalogSearch:
     def _route(self, expression: str, limit: int) -> list[dict]:
         if not expression:
             return []
+        bm25_weights = ", ".join(str(weight) for weight in BM25_COLUMN_WEIGHTS)
         rows = self.connection.execute(
             "SELECT parent_asin, title, categories, features, details, store, description, "
             "price, average_rating, rating_number "
             "FROM products WHERE products MATCH ? "
-            "ORDER BY bm25(products, 0.0, 7.0, 4.5, 3.2, 3.2, 1.8, 1.2, 0.0, 0.0, 0.0) "
+            f"ORDER BY bm25(products, {bm25_weights}) "
             "LIMIT ?",
             (expression, limit),
         ).fetchall()
@@ -291,6 +296,7 @@ class CatalogSearch:
         routing = self.intent_router.route(state)
         policy = self.ranking_policies.for_mode(routing.mode)
         base_scores: dict[str, float] = {}
+        hard_constraint_exactness: dict[str, tuple[int, int]] = {}
         exact_hard_matches: set[str] = set()
         for parent_asin, product in candidates.items():
             features = product["_features"]
@@ -312,7 +318,14 @@ class CatalogSearch:
             )
             score += self._budget_violation_adjustment(features, query, policy)
             base_scores[parent_asin] = score
-            if self._exact_hard_constraint_match(features, state.evidence):
+            exact_count, hard_constraint_count = self._hard_constraint_exactness(
+                features, state.evidence
+            )
+            hard_constraint_exactness[parent_asin] = (
+                exact_count,
+                hard_constraint_count,
+            )
+            if hard_constraint_count > 0 and exact_count == hard_constraint_count:
                 exact_hard_matches.add(parent_asin)
 
         # Dense retrieval never admits candidates. It can only adjust lexical
@@ -371,7 +384,18 @@ class CatalogSearch:
             candidates[parent_asin]["_vector_contribution"] = contribution
             candidates[parent_asin]["_ranking_mode"] = routing.mode.value
             ranked.append((parent_asin, base_score + contribution))
-        ranked.sort(key=lambda item: (-item[1], item[0]))
+        # Exact hard-constraint coverage defines explicit ranking tiers. The
+        # calibrated score only orders products within the same coverage tier.
+        ranked.sort(key=lambda item: (
+            -int(
+                hard_constraint_exactness[item[0]][1] > 0
+                and hard_constraint_exactness[item[0]][0]
+                == hard_constraint_exactness[item[0]][1]
+            ),
+            -hard_constraint_exactness[item[0]][0],
+            -item[1],
+            item[0],
+        ))
         context: list[dict] = []
         for parent_asin, score in ranked[:100]:
             product = dict(candidates[parent_asin])
@@ -483,6 +507,15 @@ class CatalogSearch:
     def _exact_hard_constraint_match(
         product: ProductFeatures | dict, evidence: list[Evidence]
     ) -> bool:
+        exact_count, hard_constraint_count = CatalogSearch._hard_constraint_exactness(
+            product, evidence
+        )
+        return hard_constraint_count > 0 and exact_count == hard_constraint_count
+
+    @staticmethod
+    def _hard_constraint_exactness(
+        product: ProductFeatures | dict, evidence: list[Evidence]
+    ) -> tuple[int, int]:
         hard_constraints = [
             item
             for item in evidence
@@ -491,7 +524,7 @@ class CatalogSearch:
             and terms(item.text)
         ]
         if not hard_constraints:
-            return False
+            return 0, 0
         if isinstance(product, ProductFeatures):
             normalized_text = product.normalized_text
         else:
@@ -499,10 +532,11 @@ class CatalogSearch:
                 " ".join(terms(str(product.get(field) or "")))
                 for field in FIELD_WEIGHTS
             )
-        return all(
+        exact_count = sum(
             " ".join(terms(item.text)) in normalized_text
             for item in hard_constraints
         )
+        return exact_count, len(hard_constraints)
 
     @staticmethod
     def _constraint_score(product: ProductFeatures, query: CompiledQuery) -> float:

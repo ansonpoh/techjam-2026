@@ -298,6 +298,18 @@ class CatalogVectorIndexTest(unittest.TestCase):
             {**shoe, "features": "standard width"}, hard
         ))
 
+        multiple_hard = [
+            Evidence("black leather", 3.8, "hard_constraint", 1),
+            Evidence("wide width", 3.8, "hard_constraint", 1),
+        ]
+        self.assertEqual(
+            CatalogSearch._hard_constraint_exactness(
+                {**shoe, "features": "black leather standard width"},
+                multiple_hard,
+            ),
+            (1, 2),
+        )
+
     def test_runtime_thresholds_match_calibration_artifact(self) -> None:
         calibration = json.loads(
             (Path(__file__).resolve().parents[1] / "docs" / "vector_gate_calibration.json")
