@@ -40,11 +40,105 @@ Python 3.10 or later is recommended. The starter uses only the Python standard l
 python3 -m evaluator.local_evaluator
 ```
 
-Edit `starter/agent.py` to implement your system. Do not edit the evaluator or public labels when reporting your local score.
+The Agent implementation is in `starter/`. Do not edit the evaluator or public labels when reporting your local score.
 The command writes per-session results and aggregate metrics to `results.json`.
 
 The included weak BM25 starter scores Hit Rate@10 `0.125`, MRR `0.068034`, and
 MTTC `9.81` on the released public set. See `docs/baseline_results.json`.
+
+## Implemented Agent
+
+This repository now includes a stateful, offline-first conversational search
+agent. It uses only the Python standard library and requires no API key, model
+download, or network access during evaluation.
+
+The pipeline has five stages:
+
+1. `starter.dialogue.SessionState` turns each message into weighted positive
+   evidence, tracks requested attributes, ignores explicit no-preference
+   answers, and removes superseded opening preferences on intent override.
+2. `starter.retrieval.CatalogSearch` generates candidates through accumulated
+   keyword, exact-phrase, and category routes using a weighted SQLite FTS5
+   index.
+3. Reciprocal-rank fusion combines the routes without assuming their raw
+   scores are calibrated.
+4. A deterministic reranker scores constraint coverage, exact metadata
+   phrases, budget proximity, a small aggregate-profile match, and a
+   log-scaled product-popularity prior.
+5. An adaptive question planner measures how much the live candidates differ
+   across material, colour, size, style, use case, price, brand, category, and
+   features. It selects the facet with the greatest estimated information gain
+   and generates the question from observed candidate values. There is no
+   fixed question order or per-attribute question-text dictionary.
+
+The current public-set results are:
+
+| Agent | Hit Rate@10 | MRR | MTTC | Efficiency | TechnicalScore |
+|---|---:|---:|---:|---:|---:|
+| Released BM25 baseline | 0.125 | 0.068034 | 9.81 | 0.119 | 0.106710 |
+| Stateful adaptive multi-route agent | **0.995** | **0.721635** | **1.845** | **0.9155** | **0.897091** |
+
+Scenario Hit Rate@10 is `0.9875` for Buying and `1.0` for Browsing, Intent
+Override, and Boundary. These are development-set measurements, not estimates
+of the private leaderboard score. The method does not memorize public target
+identifiers; public labels are used only by the evaluator and optional
+diagnostic script.
+
+For comparison, the earlier fixed clarification sequence scored `0.899689`.
+The adaptive policy gives up `0.002598` TechnicalScore while preserving the
+same `0.995` Hit Rate, in exchange for questions that react to the current
+candidate pool rather than assuming one predetermined conversation path.
+
+### Reproduce the Results
+
+```bash
+python -m unittest discover -s tests -v
+python -m evaluator.local_evaluator
+```
+
+For a turn-by-turn inspection of one labelled development session:
+
+```bash
+python -m scripts.analyze_session public_0053
+```
+
+The diagnostic script is development-only and is not imported by the Agent.
+
+### Cost, Latency, and Limitations
+
+- Model/API cost and reported token usage are zero. The evaluated path is
+  deterministic and standard-library-only.
+- On the development machine with Python 3.13.5, building the 50,000-product
+  in-memory index took approximately 1.81 seconds. A small ten-turn benchmark
+  averaged approximately 163 ms per response with adaptive question analysis.
+  The complete 200-session public evaluator, including its own catalog loading
+  and Agent startup, took about 62 seconds. These measurements are
+  hardware-dependent.
+- The released simulator reveals constraints copied from catalog metadata, so
+  exact phrases are especially informative. More varied real customer language
+  would benefit from an optional local semantic-retrieval route.
+- Very broad categories paired only with generic attributes can remain
+  intrinsically ambiguous. The public run misses one such session, and private
+  performance may be lower than the development score.
+- The popularity feature is log-scaled and subordinate to textual constraints,
+  but it can still favor established products when several candidates are
+  otherwise indistinguishable.
+
+### Design References
+
+- [SQLite FTS5](https://www.sqlite.org/fts5.html) documents phrase queries,
+  column weights, and the sign/order semantics of its BM25 implementation.
+- Cormack, Clarke, and Buettcher's
+  [Reciprocal Rank Fusion paper](https://cormack.uwaterloo.ca/cormacksigir09-rrf.pdf)
+  motivates robust rank-based fusion of heterogeneous retrieval routes.
+- The [Sentence Transformers retrieve-and-rerank
+  documentation](https://www.sbert.net/examples/sentence_transformer/applications/retrieve_rerank/README.html)
+  supports the two-stage candidate-generation/reranking architecture. A dense
+  model is deliberately not required here so the official path stays fully
+  offline and reproducible.
+- Aliannejadi et al.'s [clarifying-question retrieval
+  framework](https://arxiv.org/abs/1907.06554) motivates treating question
+  selection as part of retrieval rather than as free-form chat generation.
 
 ## Agent Interface
 
