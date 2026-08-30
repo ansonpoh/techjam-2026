@@ -69,7 +69,12 @@ The pipeline has seven stages:
    scores are calibrated.
 5. A deterministic reranker scores constraint coverage, exact metadata
    phrases, budget proximity, a small aggregate-profile match, and a
-   log-scaled product-popularity prior. Product text is normalized once on
+   log-scaled product-popularity prior. In Buying mode, an independently
+   calibrated rating-history alignment provides a bounded tie-break below the
+   hard-constraint and category tiers. Across both routing modes, a cohesive
+   sequence tier prefers products whose distinct disclosed details occur
+   together in catalog order; it remains below hard-constraint and category
+   tiers and does not use evaluator labels. Product text is normalized once on
    first retrieval and retained in a bounded 5,000-entry LRU feature cache;
    query evidence is compiled once per turn and reused for every candidate.
 6. An adaptive question planner measures how much the live candidates differ
@@ -90,7 +95,7 @@ The current public-set results are:
 | Agent | Hit Rate@10 | MRR | MTTC | Efficiency | TechnicalScore |
 |---|---:|---:|---:|---:|---:|
 | Released BM25 baseline | 0.125 | 0.068034 | 9.81 | 0.119 | 0.106710 |
-| Stateful agent with catalog constraint index | **1.000** | **0.959256** | **2.125** | **0.8875** | **0.965277** |
+| Stateful agent with constraint index, profile alignment, and cohesive-detail ranking | **1.000** | **0.963173** | **2.120** | **0.8880** | **0.966552** |
 
 Scenario Hit Rate@10 is `1.0` for Buying, Intent Override, Browsing, and
 Boundary. These are public development-set measurements, not estimates of the

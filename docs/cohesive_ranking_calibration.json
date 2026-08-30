@@ -1,0 +1,44 @@
+{
+  "dataset": "data/public_set.jsonl",
+  "runtime_scope": "buying and browsing modes; below exact hard-constraint and leaf-category tiers",
+  "method": "label-free cohesive ordering of distinct active evidence chunks within normalized catalog text",
+  "baseline": {
+    "hit_rate_at_10": 1.0,
+    "mrr": 0.960673,
+    "mttc": 2.125,
+    "efficiency": 0.8875,
+    "recommended_technical_score": 0.965702
+  },
+  "selected": {
+    "hit_rate_at_10": 1.0,
+    "mrr": 0.963173,
+    "mttc": 2.12,
+    "efficiency": 0.888,
+    "recommended_technical_score": 0.966552,
+    "scenario_metrics": {
+      "boundary": {"sample_count": 10, "hit_rate_at_10": 1.0, "mrr": 1.0, "mttc": 2.6},
+      "browsing": {"sample_count": 80, "hit_rate_at_10": 1.0, "mrr": 0.9625, "mttc": 1.975},
+      "buying": {"sample_count": 80, "hit_rate_at_10": 1.0, "mrr": 0.962396, "mttc": 1.625},
+      "intent_override": {"sample_count": 30, "hit_rate_at_10": 1.0, "mrr": 0.954762, "mttc": 3.666667}
+    }
+  },
+  "score_delta": 0.00085,
+  "rejected_experiments": {
+    "candidate_pool_rarity_and_field_specificity": {
+      "recommended_technical_score": 0.965577,
+      "reason": "moved one Buying target from rank 3 to rank 4"
+    },
+    "risk_aware_early_top_2": {
+      "best_recommended_technical_score": 0.965052,
+      "reason": "MTTC savings did not offset earlier lower-rank conversions"
+    },
+    "browsing_rating_alignment": {
+      "recommended_technical_score": 0.965702,
+      "reason": "no session or aggregate change"
+    },
+    "partial_adjacent_sequence_extension": {
+      "recommended_technical_score": 0.966552,
+      "reason": "no improvement over the simpler complete-sequence tier"
+    }
+  }
+}

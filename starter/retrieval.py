@@ -396,6 +396,11 @@ class CatalogSearch:
             profile_bonus = self._profile_bonus(features, state, policy)
             score += profile_bonus
             product["_profile_bonus"] = profile_bonus
+            rating_alignment = self._profile_rating_alignment(
+                features, state.user_profile
+            )
+            score += policy.profile_rating_scale * rating_alignment
+            product["_profile_rating_alignment"] = rating_alignment
             base_scores[parent_asin] = score
             exact_count, hard_constraint_count = self._hard_constraint_exactness(
                 features, state.evidence
@@ -455,9 +460,6 @@ class CatalogSearch:
         ranked: list[tuple[str, float]] = []
         best_lexical_score = max(base_scores.values(), default=0.0)
         has_exact_hard_match = bool(exact_hard_matches)
-        use_constraint_sequence_tier = any(
-            item.source == "override" for item in query.evidence
-        )
         for parent_asin, base_score in base_scores.items():
             similarity = vector_scores.get(parent_asin, 0.0)
             contribution = self._bounded_vector_contribution(
@@ -484,10 +486,7 @@ class CatalogSearch:
             ),
             -hard_constraint_exactness[item[0]][0],
             -int(category_leaf_matches[item[0]]),
-            -int(
-                use_constraint_sequence_tier
-                and constraint_sequence_matches[item[0]]
-            ),
+            -int(constraint_sequence_matches[item[0]]),
             -item[1],
             item[0],
         ))
@@ -757,6 +756,19 @@ class CatalogSearch:
             coverage = sum(token in product.token_weights for token in value_tokens) / len(value_tokens)
             total += 0.35 * preference.confidence * coverage
         return min(cap, total)
+
+    @staticmethod
+    def _profile_rating_alignment(
+        product: ProductFeatures, user_profile: dict,
+    ) -> float:
+        """Return bounded affinity to the customer's historical rating pattern."""
+        try:
+            prior_rating = float(user_profile.get("average_prior_rating"))
+        except (AttributeError, TypeError, ValueError):
+            return 0.0
+        if not 1.0 <= prior_rating <= 5.0 or not 0.0 < product.average_rating <= 5.0:
+            return 0.0
+        return 1.0 - abs(product.average_rating - prior_rating) / 4.0
 
     @staticmethod
     def _price_score(product: ProductFeatures, query: CompiledQuery) -> float:

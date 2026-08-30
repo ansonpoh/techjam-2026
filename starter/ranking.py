@@ -62,6 +62,7 @@ class RankingPolicy:
     soft_coverage_bonus: float = 0.0
     soft_exact_bonus: float = 0.0
     budget_violation_penalty: float = 0.0
+    profile_rating_scale: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +89,7 @@ DEFAULT_RANKING_POLICIES = RankingPolicies(
         hard_missing_penalty=0.25,
         contradiction_penalty=0.50,
         budget_violation_penalty=0.50,
+        profile_rating_scale=0.75,
     ),
     browsing=RankingPolicy(),
 )

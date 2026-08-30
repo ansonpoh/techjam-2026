@@ -629,6 +629,42 @@ class AgentRetrievalTest(unittest.TestCase):
         self.assertLess(QUALITY_REVIEW_WEIGHT, 1.20)
         self.assertLess(popular - obscure, 9.5)
 
+    def test_profile_rating_alignment_is_bounded_and_missing_safe(self) -> None:
+        store = ProductFeatureStore()
+        exact = self._features(store, "exact", average_rating=2.0)
+        distant = self._features(store, "distant", average_rating=5.0)
+
+        exact_alignment = CatalogSearch._profile_rating_alignment(
+            exact, {"average_prior_rating": 2.0}
+        )
+        distant_alignment = CatalogSearch._profile_rating_alignment(
+            distant, {"average_prior_rating": 2.0}
+        )
+
+        self.assertEqual(exact_alignment, 1.0)
+        self.assertGreater(exact_alignment, distant_alignment)
+        self.assertGreaterEqual(distant_alignment, 0.0)
+        self.assertEqual(
+            CatalogSearch._profile_rating_alignment(exact, {}), 0.0
+        )
+
+    def test_runtime_profile_rating_scale_matches_calibration(self) -> None:
+        calibration = json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "docs"
+                / "profile_rating_calibration.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            DEFAULT_RANKING_POLICIES.buying.profile_rating_scale,
+            calibration["selected"]["profile_rating_scale"],
+        )
+        self.assertEqual(
+            DEFAULT_RANKING_POLICIES.browsing.profile_rating_scale, 0.0
+        )
+
     def test_budget_proximity_is_scored_without_a_network_model(self) -> None:
         store = ProductFeatureStore()
         evidence = [Evidence("budget around $50", 3.0, "clarification", 2)]
