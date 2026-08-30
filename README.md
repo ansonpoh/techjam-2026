@@ -74,23 +74,23 @@ The pipeline has seven stages:
    query evidence is compiled once per turn and reused for every candidate.
 6. An adaptive question planner measures how much the live candidates differ
    across material, colour, size, style, use case, price, brand, category, and
-   features. It selects the facet with the greatest estimated information gain
-   and generates the question from observed candidate values. There is no
-   fixed question order or per-attribute question-text dictionary.
+   features. It returns the selected attribute and message together with raw
+   information gain, estimated answerability, and their expected value. There
+   is no fixed question order or per-attribute question-text dictionary.
 7. An immutable recommendation policy chooses output breadth from the live
    Top-1/Top-2 margin, normalized candidate entropy, exact hard-constraint
-   coverage, whether another clarification is likely to be answerable, and the
-   remaining turn budget. It stays narrow for a decisive winner or a valuable
-   next question, and broadens when the ranking is ambiguous and questions are
-   unlikely to help. The runtime policy never reads evaluator scenario labels
-   or target identifiers.
+   coverage, clarification expected value, and the remaining turn budget. It
+   stays narrow for a decisive winner or a high-value next question, exposes a
+   five-item shortlist for a low-value question, and uses full breadth when a
+   low-value question coincides with an ambiguous ranking. The runtime policy
+   never reads evaluator scenario labels or target identifiers.
 
 The current public-set results are:
 
 | Agent | Hit Rate@10 | MRR | MTTC | Efficiency | TechnicalScore |
 |---|---:|---:|---:|---:|---:|
 | Released BM25 baseline | 0.125 | 0.068034 | 9.81 | 0.119 | 0.106710 |
-| Stateful agent with catalog constraint index | **1.000** | **0.959256** | **2.130** | **0.8870** | **0.965177** |
+| Stateful agent with catalog constraint index | **1.000** | **0.959256** | **2.125** | **0.8875** | **0.965277** |
 
 Scenario Hit Rate@10 is `1.0` for Buying, Intent Override, Browsing, and
 Boundary. These are public development-set measurements, not estimates of the
@@ -117,9 +117,10 @@ not ranking behavior.
 The breadth policy is calibrated with a scenario-stratified 160/40
 development/validation split. The script records each ranking trajectory once,
 compares the fixed `(1,1,3)`, `(1,2,3)`, `(1,3,5)`, `(1,1,5)`, and `(1,3,10)`
-schedules plus full breadth, and searches 1,944 adaptive margin/entropy policy
-configurations. Only the development fold selects the runtime parameters; the
-validation fold is reported untouched in
+schedules plus full breadth, searches 1,944 adaptive margin/entropy policy
+configurations, and compares 14 focused question-value cutoff/width variants.
+Only the development fold selects the runtime parameters; the validation fold
+is reported untouched in
 `docs/recommendation_breadth_calibration.json`.
 
 Reproduce the calibration with:

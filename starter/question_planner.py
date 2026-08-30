@@ -29,6 +29,17 @@ class FacetScore:
     examples: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class QuestionPlan:
+    """A clarification question and the value the planner expects from it."""
+
+    attribute: str | None
+    message: str
+    information_gain: float
+    answerability: float
+    expected_value: float
+
+
 class AdaptiveQuestionPlanner:
     """Select clarification facets from candidate-pool information gain."""
 
@@ -40,18 +51,9 @@ class AdaptiveQuestionPlanner:
         state: SessionState,
         candidates: list[dict],
         turn: int,
-    ) -> tuple[str | None, str]:
+    ) -> QuestionPlan:
         if turn >= 10 or not candidates:
-            return None, "These are my best matches based on everything you've shared."
-
-        # Cap to avoid repetition and honor an explicit no-preference reply.
-        if (
-            turn <= 3
-            and "other" not in state.no_preference_attributes
-            and state.asked_attributes.count("other") < EARLY_OPEN_QUESTION_LIMIT
-        ):
-            state.record_question("other")
-            return "other", self._word_question("other", ())
+            return self._no_question()
 
         facet_scores = self._score_facets(candidates)
         available = [
@@ -59,8 +61,27 @@ class AdaptiveQuestionPlanner:
             for facet in facet_scores
             if facet.attribute not in state.no_preference_attributes
         ]
+
+        # Cap to avoid repetition and honor an explicit no-preference reply.
+        if (
+            turn <= 3
+            and "other" not in state.no_preference_attributes
+            and state.asked_attributes.count("other") < EARLY_OPEN_QUESTION_LIMIT
+        ):
+            proxy = max(available, key=lambda facet: facet.information_gain, default=None)
+            information_gain = proxy.information_gain if proxy else 0.0
+            answerability = self._answerability("other", state)
+            state.record_question("other")
+            return QuestionPlan(
+                "other",
+                self._word_question("other", ()),
+                information_gain,
+                answerability,
+                information_gain * answerability,
+            )
+
         if not available:
-            return None, "These are my best matches based on everything you've shared."
+            return self._no_question()
 
         adjusted = [
             FacetScore(
@@ -79,11 +100,38 @@ class AdaptiveQuestionPlanner:
         if self._needs_open_question(candidates, top_facets, state):
             attribute = "other"
             examples = tuple(facet.attribute.replace("_", " ") for facet in top_facets[:2])
+            raw_facet = next(
+                facet for facet in available if facet.attribute == adjusted[0].attribute
+            )
         else:
             examples = adjusted[0].examples
+            raw_facet = next(facet for facet in available if facet.attribute == attribute)
 
+        answerability = self._answerability(attribute, state)
         state.record_question(attribute)
-        return attribute, self._word_question(attribute, examples)
+        return QuestionPlan(
+            attribute,
+            self._word_question(attribute, examples),
+            raw_facet.information_gain,
+            answerability,
+            raw_facet.information_gain * answerability,
+        )
+
+    @staticmethod
+    def _answerability(attribute: str, state: SessionState) -> float:
+        return ANSWERABILITY_PRIORS.get(attribute, 0.50) / (
+            1.0 + 0.85 * state.asked_attributes.count(attribute)
+        )
+
+    @staticmethod
+    def _no_question() -> QuestionPlan:
+        return QuestionPlan(
+            None,
+            "These are my best matches based on everything you've shared.",
+            0.0,
+            0.0,
+            0.0,
+        )
 
     def _score_facets(self, candidates: list[dict]) -> list[FacetScore]:
         observations: dict[str, list[tuple[str, ...]]] = {

@@ -67,7 +67,7 @@ class Agent:
             state, limit=max(1, min(int(top_k), 10))
         )
 
-        ask_attribute, message = self.question_planner.choose(
+        question_plan = self.question_planner.choose(
             state, result.candidates, turn
         )
 
@@ -75,7 +75,9 @@ class Agent:
         hard_count = int(top_candidate.get("_hard_constraint_count") or 0)
         exact_count = int(top_candidate.get("_hard_constraint_exact_count") or 0)
         clarification_count = (
-            state.asked_attributes.count(ask_attribute) if ask_attribute else 0
+            state.asked_attributes.count(question_plan.attribute)
+            if question_plan.attribute
+            else 0
         )
         recommendation_limit = self.config.recommendation_policy.limit_for(
             turn,
@@ -84,16 +86,17 @@ class Agent:
             hard_constraint_coverage=(exact_count / hard_count if hard_count else 0.0),
             has_hard_constraints=hard_count > 0,
             has_answerable_clarification=(
-                ask_attribute is not None
+                question_plan.attribute is not None
                 and clarification_count <= 2
                 and len(state.asked_attributes) <= 2
             ),
+            clarification_expected_value=question_plan.expected_value,
             turns_remaining=max(0, 10 - turn),
         )
         ranked = result.recommendations[:recommendation_limit]
         return {
-            "message": message,
-            "ask_attribute": ask_attribute,
+            "message": question_plan.message,
+            "ask_attribute": question_plan.attribute,
             "recommendations": [
                 {"parent_asin": parent_asin, "score": round(score, 6)}
                 for parent_asin, score in ranked

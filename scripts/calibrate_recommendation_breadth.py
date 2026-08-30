@@ -210,6 +210,16 @@ def _candidate_policies() -> dict[str, object]:
                                 low_entropy=low_entropy, high_entropy=high_entropy,
                                 clarification_horizon=horizon, moderate_width=width,
                             )
+    # Focused extension of the previously selected runtime policy. Question
+    # value does not alter trajectories, so these variants can be compared in
+    # the same replay without another retrieval pass.
+    for threshold in (0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50):
+        for low_value_width in (5, 10):
+            name = f"question_value_t{threshold:g}_w{low_value_width}"
+            policies[name] = RecommendationPolicy(
+                valuable_question_threshold=threshold,
+                low_value_width=low_value_width,
+            )
     return policies
 
 
@@ -224,6 +234,8 @@ def _policy_parameters(policy: object) -> dict:
         "high_entropy": policy.high_entropy,
         "clarification_horizon": policy.clarification_horizon,
         "moderate_width": policy.moderate_width,
+        "valuable_question_threshold": policy.valuable_question_threshold,
+        "low_value_width": policy.low_value_width,
     }
 
 

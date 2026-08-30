@@ -238,7 +238,7 @@ class AdaptiveQuestionPlannerTest(unittest.TestCase):
             self._candidate("leather shirt", 14.0),
             self._candidate("polyester shirt", 10.0),
         ]
-        material_attribute, material_question = self.planner.choose(
+        material_plan = self.planner.choose(
             material_state, material_candidates, 1
         )
 
@@ -249,15 +249,21 @@ class AdaptiveQuestionPlannerTest(unittest.TestCase):
             self._candidate("blue shirt", 14.0),
             self._candidate("green shirt", 10.0),
         ]
-        color_attribute, color_question = self.planner.choose(
+        color_plan = self.planner.choose(
             color_state, color_candidates, 1
         )
 
-        self.assertEqual(material_attribute, "material")
-        self.assertEqual(color_attribute, "color")
-        self.assertIn("cotton", material_question)
-        self.assertIn("red", color_question)
-        self.assertNotEqual(material_question, color_question)
+        self.assertEqual(material_plan.attribute, "material")
+        self.assertEqual(color_plan.attribute, "color")
+        self.assertIn("cotton", material_plan.message)
+        self.assertIn("red", color_plan.message)
+        self.assertNotEqual(material_plan.message, color_plan.message)
+        self.assertGreater(material_plan.information_gain, 0.0)
+        self.assertGreater(material_plan.answerability, 0.0)
+        self.assertAlmostEqual(
+            material_plan.expected_value,
+            material_plan.information_gain * material_plan.answerability,
+        )
 
     def test_early_question_prioritizes_must_have_without_repeating_boundary(self) -> None:
         state = SessionState(user_profile={})
@@ -266,12 +272,12 @@ class AdaptiveQuestionPlannerTest(unittest.TestCase):
             self._candidate("leather shirt", 14.0),
         ]
 
-        attribute, _ = self.planner.choose(state, candidates, 1)
-        self.assertEqual(attribute, "other")
+        plan = self.planner.choose(state, candidates, 1)
+        self.assertEqual(plan.attribute, "other")
 
         state.no_preference_attributes.add("other")
-        next_attribute, _ = self.planner.choose(state, candidates, 2)
-        self.assertNotEqual(next_attribute, "other")
+        next_plan = self.planner.choose(state, candidates, 2)
+        self.assertNotEqual(next_plan.attribute, "other")
 
 
 class AgentRetrievalTest(unittest.TestCase):
@@ -750,6 +756,20 @@ class AgentRetrievalTest(unittest.TestCase):
             ),
             1,
         )
+        self.assertEqual(
+            policy.limit_for(
+                3, 10, scores=ambiguous, has_answerable_clarification=True,
+                clarification_expected_value=0.05, turns_remaining=7,
+            ),
+            10,
+        )
+        self.assertEqual(
+            policy.limit_for(
+                3, 10, scores=decisive, has_answerable_clarification=True,
+                clarification_expected_value=0.05, turns_remaining=7,
+            ),
+            5,
+        )
 
     def test_full_breadth_policy_is_available_for_controlled_comparisons(self) -> None:
         config = AgentConfig(recommendation_policy=FULL_BREADTH_POLICY)
@@ -773,6 +793,11 @@ class AgentRetrievalTest(unittest.TestCase):
             policy.clarification_horizon, selected["clarification_horizon"]
         )
         self.assertEqual(policy.moderate_width, selected["moderate_width"])
+        self.assertEqual(
+            policy.valuable_question_threshold,
+            selected["valuable_question_threshold"],
+        )
+        self.assertEqual(policy.low_value_width, selected["low_value_width"])
 
     def test_default_agent_does_not_construct_vector_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -810,7 +835,9 @@ class AgentRetrievalTest(unittest.TestCase):
             response = agent.respond(
                 "s", "For that, what matters is: full grain leather; wide width.", 2, 10
             )
-            self.assertEqual(len(response["recommendations"]), 1)
+            # The remaining question has no discriminative value, so the
+            # policy exposes alternatives instead of collapsing to top-1.
+            self.assertEqual(len(response["recommendations"]), 2)
             self.assertEqual(response["recommendations"][0]["parent_asin"], "B")
 
     def test_exact_hard_constraint_tiers_dominate_numeric_score(self) -> None:

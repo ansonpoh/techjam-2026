@@ -14,9 +14,11 @@ class RecommendationPolicy:
     high_margin: float = 0.08
     low_margin: float = 0.01
     low_entropy: float = 0.80
-    high_entropy: float = 1.0
+    high_entropy: float = 0.98
     clarification_horizon: int = 1
     moderate_width: int = 2
+    valuable_question_threshold: float = 0.20
+    low_value_width: int = 5
     adaptive: bool = True
 
     def __post_init__(self) -> None:
@@ -24,7 +26,13 @@ class RecommendationPolicy:
             raise ValueError("margin thresholds must be ordered and non-negative")
         if not 0.0 <= self.low_entropy <= self.high_entropy <= 1.0:
             raise ValueError("entropy thresholds must be ordered within [0, 1]")
-        if self.clarification_horizon < 0 or self.moderate_width < 1:
+        if not 0.0 <= self.valuable_question_threshold <= 1.0:
+            raise ValueError("question value threshold must be within [0, 1]")
+        if (
+            self.clarification_horizon < 0
+            or self.moderate_width < 1
+            or self.low_value_width < 1
+        ):
             raise ValueError("policy widths and horizons must be non-negative")
 
     def limit_for(
@@ -36,6 +44,7 @@ class RecommendationPolicy:
         hard_constraint_coverage: float = 0.0,
         has_hard_constraints: bool = False,
         has_answerable_clarification: bool = False,
+        clarification_expected_value: float | None = None,
         turns_remaining: int | None = None,
     ) -> int:
         requested = max(1, min(int(requested), 10))
@@ -46,6 +55,20 @@ class RecommendationPolicy:
         margin = self._relative_margin(scores)
         entropy = self._normalized_entropy(scores)
         constraints_satisfied = not has_hard_constraints or hard_constraint_coverage >= 1.0
+        ambiguous = margin <= self.low_margin or entropy >= self.high_entropy
+        incomplete_constraints = has_hard_constraints and hard_constraint_coverage < 1.0
+        question_is_valuable = has_answerable_clarification and (
+            clarification_expected_value is None
+            or clarification_expected_value >= self.valuable_question_threshold
+        )
+
+        # A question with little expected ranking value should not hide viable
+        # alternatives. Ambiguous rankings get full recall; otherwise expose a
+        # useful shortlist immediately.
+        if has_answerable_clarification and not question_is_valuable:
+            if ambiguous or incomplete_constraints:
+                return requested
+            return min(requested, self.low_value_width)
 
         # Once the useful clarification budget is exhausted, use the remaining
         # turns for recall. A numerical leader should not suppress alternatives
@@ -60,11 +83,9 @@ class RecommendationPolicy:
 
         # Preserve a narrow answer while another useful customer answer can
         # still change the ranking. Near the turn limit, prefer recall instead.
-        if has_answerable_clarification and remaining > self.clarification_horizon:
+        if question_is_valuable and remaining > self.clarification_horizon:
             return 1
 
-        ambiguous = margin <= self.low_margin or entropy >= self.high_entropy
-        incomplete_constraints = has_hard_constraints and hard_constraint_coverage < 1.0
         if ambiguous or incomplete_constraints:
             return requested
 

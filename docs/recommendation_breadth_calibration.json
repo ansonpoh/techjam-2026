@@ -6,173 +6,175 @@
     "validation_samples": 40,
     "validation_fraction": 0.2
   },
-  "candidate_count": 1950,
+  "candidate_count": 1964,
   "fixed_policy_results": {
     "fixed_1_1_3": {
       "development": {
         "sample_count": 160,
         "hit_rate_at_10": 1.0,
-        "mrr": 0.946458,
-        "mttc": 2.16875,
-        "efficiency": 0.883125,
-        "recommended_technical_score": 0.960562
+        "mrr": 0.959487,
+        "mttc": 2.1375,
+        "efficiency": 0.88625,
+        "recommended_technical_score": 0.965096
       },
       "validation": {
         "sample_count": 40,
         "hit_rate_at_10": 1.0,
-        "mrr": 0.941667,
+        "mrr": 0.958333,
         "mttc": 2.1,
         "efficiency": 0.89,
-        "recommended_technical_score": 0.9605
+        "recommended_technical_score": 0.9655
       }
     },
     "fixed_1_2_3": {
       "development": {
         "sample_count": 160,
         "hit_rate_at_10": 1.0,
-        "mrr": 0.908958,
-        "mttc": 2.075,
-        "efficiency": 0.8925,
-        "recommended_technical_score": 0.951187
+        "mrr": 0.925112,
+        "mttc": 2.05625,
+        "efficiency": 0.894375,
+        "recommended_technical_score": 0.956408
       },
       "validation": {
         "sample_count": 40,
         "hit_rate_at_10": 1.0,
-        "mrr": 0.908333,
+        "mrr": 0.920833,
         "mttc": 2.0,
         "efficiency": 0.9,
-        "recommended_technical_score": 0.9525
+        "recommended_technical_score": 0.95625
       }
     },
     "fixed_1_3_5": {
       "development": {
         "sample_count": 160,
         "hit_rate_at_10": 1.0,
-        "mrr": 0.885729,
-        "mttc": 2.025,
-        "efficiency": 0.8975,
-        "recommended_technical_score": 0.945219
+        "mrr": 0.907403,
+        "mttc": 2.0125,
+        "efficiency": 0.89875,
+        "recommended_technical_score": 0.951971
       },
       "validation": {
         "sample_count": 40,
         "hit_rate_at_10": 1.0,
-        "mrr": 0.9,
-        "mttc": 1.95,
-        "efficiency": 0.905,
-        "recommended_technical_score": 0.951
+        "mrr": 0.916667,
+        "mttc": 1.975,
+        "efficiency": 0.9025,
+        "recommended_technical_score": 0.9555
       }
     },
     "fixed_1_1_5": {
       "development": {
         "sample_count": 160,
         "hit_rate_at_10": 1.0,
-        "mrr": 0.936771,
-        "mttc": 2.14375,
-        "efficiency": 0.885625,
-        "recommended_technical_score": 0.958156
+        "mrr": 0.950112,
+        "mttc": 2.10625,
+        "efficiency": 0.889375,
+        "recommended_technical_score": 0.962908
       },
       "validation": {
         "sample_count": 40,
         "hit_rate_at_10": 1.0,
-        "mrr": 0.941667,
+        "mrr": 0.958333,
         "mttc": 2.1,
         "efficiency": 0.89,
-        "recommended_technical_score": 0.9605
+        "recommended_technical_score": 0.9655
       }
     },
     "fixed_1_3_10": {
       "development": {
         "sample_count": 160,
         "hit_rate_at_10": 1.0,
-        "mrr": 0.885729,
-        "mttc": 2.0125,
-        "efficiency": 0.89875,
-        "recommended_technical_score": 0.945469
+        "mrr": 0.907403,
+        "mttc": 2.00625,
+        "efficiency": 0.899375,
+        "recommended_technical_score": 0.952096
       },
       "validation": {
         "sample_count": 40,
         "hit_rate_at_10": 1.0,
-        "mrr": 0.9,
-        "mttc": 1.95,
-        "efficiency": 0.905,
-        "recommended_technical_score": 0.951
+        "mrr": 0.916667,
+        "mttc": 1.975,
+        "efficiency": 0.9025,
+        "recommended_technical_score": 0.9555
       }
     },
     "full_breadth": {
       "development": {
         "sample_count": 160,
         "hit_rate_at_10": 1.0,
-        "mrr": 0.7384,
+        "mrr": 0.74972,
         "mttc": 1.7125,
         "efficiency": 0.92875,
-        "recommended_technical_score": 0.90727
+        "recommended_technical_score": 0.910666
       },
       "validation": {
         "sample_count": 40,
         "hit_rate_at_10": 1.0,
-        "mrr": 0.739444,
+        "mrr": 0.731458,
         "mttc": 1.6,
         "efficiency": 0.94,
-        "recommended_technical_score": 0.909833
+        "recommended_technical_score": 0.907438
       }
     }
   },
   "selected_policy": {
-    "name": "adaptive_hm0.08_lm0.01_le0.8_he1_h1_w2",
+    "name": "adaptive_hm0.08_lm0.01_le0.8_he0.98_h1_w2",
     "parameters": {
       "kind": "adaptive",
       "high_margin": 0.08,
       "low_margin": 0.01,
       "low_entropy": 0.8,
-      "high_entropy": 1.0,
+      "high_entropy": 0.98,
       "clarification_horizon": 1,
-      "moderate_width": 2
+      "moderate_width": 2,
+      "valuable_question_threshold": 0.2,
+      "low_value_width": 5
     },
     "development": {
       "sample_count": 160,
       "hit_rate_at_10": 1.0,
-      "mrr": 0.954792,
-      "mttc": 2.18125,
-      "efficiency": 0.881875,
-      "recommended_technical_score": 0.962813
+      "mrr": 0.959487,
+      "mttc": 2.125,
+      "efficiency": 0.8875,
+      "recommended_technical_score": 0.965346
     },
     "validation": {
       "sample_count": 40,
       "hit_rate_at_10": 1.0,
-      "mrr": 0.941667,
+      "mrr": 0.958333,
       "mttc": 2.125,
       "efficiency": 0.8875,
-      "recommended_technical_score": 0.96
+      "recommended_technical_score": 0.965
     },
     "full_public_set": {
       "sample_count": 200,
       "hit_rate_at_10": 1.0,
-      "mrr": 0.952167,
-      "mttc": 2.17,
-      "efficiency": 0.883,
-      "recommended_technical_score": 0.96225
+      "mrr": 0.959256,
+      "mttc": 2.125,
+      "efficiency": 0.8875,
+      "recommended_technical_score": 0.965277
     }
   },
   "legacy_policy": {
     "validation": {
       "sample_count": 40,
       "hit_rate_at_10": 1.0,
-      "mrr": 0.941667,
+      "mrr": 0.958333,
       "mttc": 2.1,
       "efficiency": 0.89,
-      "recommended_technical_score": 0.9605
+      "recommended_technical_score": 0.9655
     },
     "full_public_set": {
       "sample_count": 200,
       "hit_rate_at_10": 1.0,
-      "mrr": 0.9455,
-      "mttc": 2.155,
-      "efficiency": 0.8845,
-      "recommended_technical_score": 0.96055
+      "mrr": 0.959256,
+      "mttc": 2.13,
+      "efficiency": 0.887,
+      "recommended_technical_score": 0.965177
     }
   },
   "validation_score_delta": -0.0005,
   "validation_improves": false,
-  "full_public_score_delta": 0.0017,
+  "full_public_score_delta": 0.0001,
   "full_public_improves": true
 }
