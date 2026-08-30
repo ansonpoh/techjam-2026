@@ -72,10 +72,13 @@ The pipeline has six stages:
    features. It selects the facet with the greatest estimated information gain
    and generates the question from observed candidate values. There is no
    fixed question order or per-attribute question-text dictionary.
-6. An immutable recommendation policy stages output breadth as confidence
-   accumulates: one result on turns 1-2, up to three on turn 3, and up to the
-   requested Top-K afterward. The schedule is runtime configuration and never
-   reads evaluator scenario labels or target identifiers.
+6. An immutable recommendation policy chooses output breadth from the live
+   Top-1/Top-2 margin, normalized candidate entropy, exact hard-constraint
+   coverage, whether another clarification is likely to be answerable, and the
+   remaining turn budget. It stays narrow for a decisive winner or a valuable
+   next question, and broadens when the ranking is ambiguous and questions are
+   unlikely to help. The runtime policy never reads evaluator scenario labels
+   or target identifiers.
 
 The current public-set results are:
 
@@ -96,6 +99,12 @@ optional diagnostic script.
 python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 python -m evaluator.local_evaluator
+```
+
+The breadth-policy counterfactual can be reproduced with:
+
+```bash
+python -m scripts.calibrate_recommendation_breadth
 ```
 
 ### Optional Semantic Vector Route

@@ -69,8 +69,24 @@ class Agent:
             state, result.candidates, turn
         )
 
+        top_candidate = result.candidates[0] if result.candidates else {}
+        hard_count = int(top_candidate.get("_hard_constraint_count") or 0)
+        exact_count = int(top_candidate.get("_hard_constraint_exact_count") or 0)
+        clarification_count = (
+            state.asked_attributes.count(ask_attribute) if ask_attribute else 0
+        )
         recommendation_limit = self.config.recommendation_policy.limit_for(
-            turn, top_k
+            turn,
+            top_k,
+            scores=tuple(score for _, score in result.recommendations),
+            hard_constraint_coverage=(exact_count / hard_count if hard_count else 0.0),
+            has_hard_constraints=hard_count > 0,
+            has_answerable_clarification=(
+                ask_attribute is not None
+                and clarification_count <= 2
+                and len(state.asked_attributes) <= 2
+            ),
+            turns_remaining=max(0, 10 - turn),
         )
         ranked = result.recommendations[:recommendation_limit]
         return {

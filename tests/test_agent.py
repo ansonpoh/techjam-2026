@@ -479,11 +479,32 @@ class AgentRetrievalTest(unittest.TestCase):
             self.assertEqual(browsing.ranking_mode, RankingMode.BROWSING)
             self.assertEqual(buying.ranking_mode, RankingMode.BUYING)
 
-    def test_default_recommendation_policy_stages_early_breadth(self) -> None:
+    def test_default_recommendation_policy_uses_live_confidence(self) -> None:
         policy = RecommendationPolicy()
 
-        self.assertEqual([policy.limit_for(turn, 10) for turn in range(1, 5)], [1, 1, 3, 10])
-        self.assertEqual(policy.limit_for(3, 2), 2)
+        decisive = (10.0, 8.0, 7.9)
+        ambiguous = (10.0, 9.9, 9.8)
+        self.assertEqual(
+            policy.limit_for(
+                2, 10, scores=decisive, hard_constraint_coverage=1.0,
+                has_hard_constraints=True,
+            ),
+            1,
+        )
+        self.assertEqual(
+            policy.limit_for(
+                8, 10, scores=ambiguous, has_answerable_clarification=False,
+                turns_remaining=2,
+            ),
+            10,
+        )
+        self.assertEqual(
+            policy.limit_for(
+                3, 10, scores=ambiguous, has_answerable_clarification=True,
+                turns_remaining=7,
+            ),
+            1,
+        )
 
     def test_full_breadth_policy_is_available_for_controlled_comparisons(self) -> None:
         config = AgentConfig(recommendation_policy=FULL_BREADTH_POLICY)

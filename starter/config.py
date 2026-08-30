@@ -1,23 +1,86 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
 class RecommendationPolicy:
-    """Limit early recommendation breadth while confidence is still evolving."""
+    """Choose recommendation breadth from live ranking confidence."""
 
-    turn_limits: tuple[int, ...] = (1, 1, 3)
+    high_margin: float = 0.08
+    low_margin: float = 0.005
+    low_entropy: float = 0.72
+    high_entropy: float = 0.98
+    clarification_horizon: int = 2
+    moderate_width: int = 3
+    adaptive: bool = True
 
     def __post_init__(self) -> None:
-        if any(limit < 1 for limit in self.turn_limits):
-            raise ValueError("recommendation limits must be positive")
+        if not 0.0 <= self.low_margin <= self.high_margin:
+            raise ValueError("margin thresholds must be ordered and non-negative")
+        if not 0.0 <= self.low_entropy <= self.high_entropy <= 1.0:
+            raise ValueError("entropy thresholds must be ordered within [0, 1]")
+        if self.clarification_horizon < 0 or self.moderate_width < 1:
+            raise ValueError("policy widths and horizons must be non-negative")
 
-    def limit_for(self, turn: int, requested: int) -> int:
+    def limit_for(
+        self,
+        turn: int,
+        requested: int,
+        *,
+        scores: tuple[float, ...] = (),
+        hard_constraint_coverage: float = 0.0,
+        has_hard_constraints: bool = False,
+        has_answerable_clarification: bool = False,
+        turns_remaining: int | None = None,
+    ) -> int:
         requested = max(1, min(int(requested), 10))
-        if 1 <= turn <= len(self.turn_limits):
-            return min(requested, self.turn_limits[turn - 1])
-        return requested
+        if not self.adaptive or requested == 1 or len(scores) < 2:
+            return requested
+
+        remaining = max(0, 10 - int(turn)) if turns_remaining is None else max(0, turns_remaining)
+        margin = self._relative_margin(scores)
+        entropy = self._normalized_entropy(scores)
+        constraints_satisfied = not has_hard_constraints or hard_constraint_coverage >= 1.0
+
+        # A decisive leader that satisfies the active must-haves does not gain
+        # anything from displaying weaker alternatives.
+        if constraints_satisfied and margin >= self.high_margin and entropy <= self.low_entropy:
+            return 1
+
+        # Preserve a narrow answer while another useful customer answer can
+        # still change the ranking. Near the turn limit, prefer recall instead.
+        if has_answerable_clarification and remaining > self.clarification_horizon:
+            return 1
+
+        # Once the useful clarification budget is exhausted, use the remaining
+        # turns for recall. A confident winner was already handled above.
+        if not has_answerable_clarification and remaining <= 6:
+            return requested
+
+        ambiguous = margin <= self.low_margin or entropy >= self.high_entropy
+        incomplete_constraints = has_hard_constraints and hard_constraint_coverage < 1.0
+        if ambiguous or incomplete_constraints:
+            return requested
+
+        return min(requested, self.moderate_width)
+
+    @staticmethod
+    def _relative_margin(scores: tuple[float, ...]) -> float:
+        top, runner_up = scores[:2]
+        return max(0.0, (top - runner_up) / max(abs(top), abs(runner_up), 1.0))
+
+    @staticmethod
+    def _normalized_entropy(scores: tuple[float, ...]) -> float:
+        sample = scores[:10]
+        if len(sample) < 2:
+            return 0.0
+        scale = max(abs(sample[0]), abs(sample[-1]), 1.0) * 0.05
+        weights = [math.exp(max(-50.0, min(0.0, (score - sample[0]) / scale))) for score in sample]
+        total = sum(weights)
+        entropy = -sum((weight / total) * math.log(weight / total) for weight in weights)
+        return entropy / math.log(len(weights))
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,4 +92,4 @@ class AgentConfig:
 
 
 DEFAULT_AGENT_CONFIG = AgentConfig()
-FULL_BREADTH_POLICY = RecommendationPolicy(turn_limits=())
+FULL_BREADTH_POLICY = RecommendationPolicy(adaptive=False)
