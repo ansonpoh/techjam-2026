@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections import Counter
 from dataclasses import dataclass
 
@@ -20,6 +21,7 @@ ANSWERABILITY_PRIORS = {
     "brand": 0.20,
 }
 EARLY_OPEN_QUESTION_LIMIT = 2
+DEFAULT_SCORE_TEMPERATURE = 5.0
 
 
 @dataclass(frozen=True)
@@ -43,8 +45,15 @@ class QuestionPlan:
 class AdaptiveQuestionPlanner:
     """Select clarification facets from candidate-pool information gain."""
 
-    def __init__(self, feature_store: ProductFeatureStore) -> None:
+    def __init__(
+        self,
+        feature_store: ProductFeatureStore,
+        score_temperature: float = DEFAULT_SCORE_TEMPERATURE,
+    ) -> None:
+        if not math.isfinite(score_temperature) or score_temperature <= 0.0:
+            raise ValueError("score_temperature must be finite and positive")
         self.feature_store = feature_store
+        self.score_temperature = score_temperature
 
     def choose(
         self,
@@ -180,8 +189,10 @@ class AdaptiveQuestionPlanner:
                 tuple(feature_values)
             )
 
+        scores = [float(product.get("_rank_score") or 0.0) for product in candidates]
+        probabilities = self._score_probabilities(scores)
         return [
-            self._information_gain(attribute, values)
+            self._information_gain(attribute, values, probabilities)
             for attribute, values in observations.items()
         ]
 
@@ -192,24 +203,71 @@ class AdaptiveQuestionPlanner:
             raise TypeError("candidate is missing precomputed ProductFeatures")
         return features
 
-    @staticmethod
     def _information_gain(
-        attribute: str, observations: list[tuple[str, ...]]
+        self,
+        attribute: str,
+        observations: list[tuple[str, ...]],
+        probabilities: list[float] | None = None,
     ) -> FacetScore:
         if not observations:
             return FacetScore(attribute, 0.0, ())
+        if probabilities is None:
+            probabilities = [1.0 / len(observations)] * len(observations)
+        if len(probabilities) != len(observations):
+            raise ValueError("each observation must have a candidate probability")
+
         signatures = [" / ".join(values) if values else "<unknown>" for values in observations]
-        counts = Counter(signatures)
-        total = len(signatures)
-        gini_reduction = 1.0 - sum((count / total) ** 2 for count in counts.values())
-        coverage = 1.0 - counts.get("<unknown>", 0) / total
-        information_gain = coverage * gini_reduction
+        grouped_probabilities: dict[str, list[float]] = {}
+        for signature, probability in zip(signatures, probabilities):
+            grouped_probabilities.setdefault(signature, []).append(probability)
+
+        # A known facet answer deterministically partitions the candidate
+        # distribution. Missing catalog values are not useful customer answers,
+        # so they contribute no reduction rather than becoming a fake answer.
+        prior_entropy = self._entropy(probabilities)
+        signature_masses: dict[str, float] = {}
+        for signature, group in grouped_probabilities.items():
+            mass = sum(group)
+            signature_masses[signature] = mass
+        known_masses = [
+            mass
+            for signature, mass in signature_masses.items()
+            if signature != "<unknown>" and mass > 0.0
+        ]
+        coverage = sum(known_masses)
+        entropy_reduction = (
+            coverage * self._entropy([mass / coverage for mass in known_masses])
+            if coverage > 0.0
+            else 0.0
+        )
+        information_gain = min(prior_entropy, entropy_reduction)
         examples = tuple(
             value
-            for value, _ in counts.most_common()
+            for value, _ in sorted(
+                signature_masses.items(), key=lambda item: -item[1]
+            )
             if value != "<unknown>"
         )[:3]
         return FacetScore(attribute, information_gain, examples)
+
+    def _score_probabilities(self, scores: list[float]) -> list[float]:
+        if not scores:
+            return []
+        maximum = max(scores)
+        weights = [
+            math.exp(max(-700.0, (score - maximum) / self.score_temperature))
+            for score in scores
+        ]
+        total = sum(weights)
+        return [weight / total for weight in weights]
+
+    @staticmethod
+    def _entropy(probabilities: list[float]) -> float:
+        return -sum(
+            probability * math.log(probability)
+            for probability in probabilities
+            if probability > 0.0
+        )
 
     @staticmethod
     def _needs_open_question(

@@ -279,6 +279,41 @@ class AdaptiveQuestionPlannerTest(unittest.TestCase):
         next_plan = self.planner.choose(state, candidates, 2)
         self.assertNotEqual(next_plan.attribute, "other")
 
+    def test_information_gain_prioritizes_high_rank_candidate_differences(self) -> None:
+        planner = AdaptiveQuestionPlanner(self.feature_store, score_temperature=1.0)
+        scores = [10.0 - index for index in range(5)] + [0.0] * 95
+        probabilities = planner._score_probabilities(scores)
+        material = [
+            (f"material-{index}",) if index < 5 else ("other",)
+            for index in range(100)
+        ]
+        color = [
+            ("same",) if index < 49 else (f"color-{index}",)
+            for index in range(100)
+        ]
+
+        uniform_material = planner._information_gain("material", material)
+        uniform_color = planner._information_gain("color", color)
+        weighted_material = planner._information_gain(
+            "material", material, probabilities
+        )
+        weighted_color = planner._information_gain("color", color, probabilities)
+
+        self.assertGreater(
+            uniform_color.information_gain, uniform_material.information_gain
+        )
+        self.assertGreater(
+            weighted_material.information_gain, weighted_color.information_gain
+        )
+
+    def test_score_softmax_is_stable_and_temperature_is_validated(self) -> None:
+        probabilities = self.planner._score_probabilities([10_000.0, 9_999.0])
+
+        self.assertAlmostEqual(sum(probabilities), 1.0)
+        self.assertGreater(probabilities[0], probabilities[1])
+        with self.assertRaises(ValueError):
+            AdaptiveQuestionPlanner(self.feature_store, score_temperature=0.0)
+
 
 class AgentRetrievalTest(unittest.TestCase):
     @staticmethod
