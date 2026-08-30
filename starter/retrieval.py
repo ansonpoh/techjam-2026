@@ -297,6 +297,8 @@ class CatalogSearch:
         policy = self.ranking_policies.for_mode(routing.mode)
         base_scores: dict[str, float] = {}
         hard_constraint_exactness: dict[str, tuple[int, int]] = {}
+        category_leaf_matches: dict[str, bool] = {}
+        constraint_sequence_matches: dict[str, bool] = {}
         exact_hard_matches: set[str] = set()
         for parent_asin, product in candidates.items():
             features = product["_features"]
@@ -327,6 +329,12 @@ class CatalogSearch:
             hard_constraint_exactness[parent_asin] = (
                 exact_count,
                 hard_constraint_count,
+            )
+            category_leaf_matches[parent_asin] = self._category_leaf_match(
+                features, state.category_text
+            )
+            constraint_sequence_matches[parent_asin] = (
+                self._constraint_sequence_match(features, query)
             )
             if hard_constraint_count > 0 and exact_count == hard_constraint_count:
                 exact_hard_matches.add(parent_asin)
@@ -373,6 +381,9 @@ class CatalogSearch:
         ranked: list[tuple[str, float]] = []
         best_lexical_score = max(base_scores.values(), default=0.0)
         has_exact_hard_match = bool(exact_hard_matches)
+        use_constraint_sequence_tier = any(
+            item.source == "override" for item in query.evidence
+        )
         for parent_asin, base_score in base_scores.items():
             similarity = vector_scores.get(parent_asin, 0.0)
             contribution = self._bounded_vector_contribution(
@@ -388,7 +399,8 @@ class CatalogSearch:
             candidates[parent_asin]["_ranking_mode"] = routing.mode.value
             ranked.append((parent_asin, base_score + contribution))
         # Exact hard-constraint coverage defines explicit ranking tiers. The
-        # calibrated score only orders products within the same coverage tier.
+        # requested leaf category and a cohesive sequence of disclosed details
+        # then break otherwise ambiguous ties before the calibrated score.
         ranked.sort(key=lambda item: (
             -int(
                 hard_constraint_exactness[item[0]][1] > 0
@@ -396,6 +408,11 @@ class CatalogSearch:
                 == hard_constraint_exactness[item[0]][1]
             ),
             -hard_constraint_exactness[item[0]][0],
+            -int(category_leaf_matches[item[0]]),
+            -int(
+                use_constraint_sequence_tier
+                and constraint_sequence_matches[item[0]]
+            ),
             -item[1],
             item[0],
         ))
@@ -406,6 +423,10 @@ class CatalogSearch:
             exact_count, hard_count = hard_constraint_exactness[parent_asin]
             product["_hard_constraint_exact_count"] = exact_count
             product["_hard_constraint_count"] = hard_count
+            product["_category_leaf_match"] = category_leaf_matches[parent_asin]
+            product["_constraint_sequence_match"] = (
+                constraint_sequence_matches[parent_asin]
+            )
             context.append(product)
         return SearchResult(
             recommendations=ranked[:limit],
@@ -543,6 +564,56 @@ class CatalogSearch:
             for item in hard_constraints
         )
         return exact_count, len(hard_constraints)
+
+    @staticmethod
+    def _category_leaf_match(
+        product: ProductFeatures, requested_category: str
+    ) -> bool:
+        """Prefer an exact catalog leaf over a deeper category containing it."""
+        generic_taxonomy_tokens = {"clothing", "shoes", "jewelry"}
+        requested = tuple(
+            token for token in terms(requested_category)
+            if token not in generic_taxonomy_tokens
+        )
+        category = tuple(
+            token for token in product.category_tokens
+            if token not in generic_taxonomy_tokens
+        )
+        return bool(requested) and category[-len(requested):] == requested
+
+    @staticmethod
+    def _constraint_sequence_match(
+        product: ProductFeatures, query: CompiledQuery
+    ) -> bool:
+        """Detect a cohesive catalog block spanning multiple disclosed details."""
+        chunks: list[tuple[str, ...]] = []
+        for item in query.evidence:
+            if item.source == "category" or item.is_budget or not item.tokens:
+                continue
+            chunk = tuple(item.tokens)
+            if chunk in chunks:
+                continue
+            # A shorter detail such as ``polyester`` adds no ordering signal
+            # when a more specific active detail already contains it.
+            if any(
+                len(chunk) <= len(other)
+                and any(
+                    other[index:index + len(chunk)] == chunk
+                    for index in range(len(other) - len(chunk) + 1)
+                )
+                for other in (
+                    tuple(candidate.tokens)
+                    for candidate in query.evidence
+                    if candidate is not item and candidate.tokens
+                )
+            ):
+                continue
+            chunks.append(chunk)
+
+        if len(chunks) < 2:
+            return False
+        sequence = " ".join(token for chunk in chunks for token in chunk)
+        return len(sequence.split()) >= 3 and sequence in product.normalized_text
 
     @staticmethod
     def _constraint_score(product: ProductFeatures, query: CompiledQuery) -> float:

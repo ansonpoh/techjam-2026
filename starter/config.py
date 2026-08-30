@@ -8,12 +8,15 @@ from dataclasses import dataclass
 class RecommendationPolicy:
     """Choose recommendation breadth from live ranking confidence."""
 
+    # Selected on the development fold recorded in
+    # docs/recommendation_breadth_calibration.json. The validation result is
+    # reported separately there rather than being used to tune these values.
     high_margin: float = 0.08
-    low_margin: float = 0.005
-    low_entropy: float = 0.72
-    high_entropy: float = 0.98
-    clarification_horizon: int = 2
-    moderate_width: int = 3
+    low_margin: float = 0.01
+    low_entropy: float = 0.80
+    high_entropy: float = 1.0
+    clarification_horizon: int = 1
+    moderate_width: int = 2
     adaptive: bool = True
 
     def __post_init__(self) -> None:
@@ -44,6 +47,12 @@ class RecommendationPolicy:
         entropy = self._normalized_entropy(scores)
         constraints_satisfied = not has_hard_constraints or hard_constraint_coverage >= 1.0
 
+        # Once the useful clarification budget is exhausted, use the remaining
+        # turns for recall. A numerical leader should not suppress alternatives
+        # when there is no customer answer left that can validate that lead.
+        if not has_answerable_clarification and remaining <= 6:
+            return requested
+
         # A decisive leader that satisfies the active must-haves does not gain
         # anything from displaying weaker alternatives.
         if constraints_satisfied and margin >= self.high_margin and entropy <= self.low_entropy:
@@ -53,11 +62,6 @@ class RecommendationPolicy:
         # still change the ranking. Near the turn limit, prefer recall instead.
         if has_answerable_clarification and remaining > self.clarification_horizon:
             return 1
-
-        # Once the useful clarification budget is exhausted, use the remaining
-        # turns for recall. A confident winner was already handled above.
-        if not has_answerable_clarification and remaining <= 6:
-            return requested
 
         ambiguous = margin <= self.low_margin or entropy >= self.high_entropy
         incomplete_constraints = has_hard_constraints and hard_constraint_coverage < 1.0

@@ -85,13 +85,13 @@ The current public-set results are:
 | Agent | Hit Rate@10 | MRR | MTTC | Efficiency | TechnicalScore |
 |---|---:|---:|---:|---:|---:|
 | Released BM25 baseline | 0.125 | 0.068034 | 9.81 | 0.119 | 0.106710 |
-| Stateful adaptive multi-route agent | **0.990** | **0.932181** | **2.275** | **0.8725** | **0.949154** |
+| Stateful adaptive multi-route agent | **1.000** | **0.952167** | **2.170** | **0.8830** | **0.962250** |
 
-Scenario Hit Rate@10 is `0.9875` for Buying, `0.966667` for Intent Override,
-and `1.0` for Browsing and Boundary. These are development-set measurements,
-not estimates of the private leaderboard score. The method does not memorize
-public target identifiers; public labels are used only by the evaluator and
-optional diagnostic script.
+Scenario Hit Rate@10 is `1.0` for Buying, Intent Override, Browsing, and
+Boundary. These are public development-set measurements, not estimates of the
+private leaderboard score. The method does not memorize public target
+identifiers; public labels are used only by the evaluator and optional
+diagnostic/calibration scripts.
 
 ### Reproduce the Results
 
@@ -101,7 +101,15 @@ python -m unittest discover -s tests -v
 python -m evaluator.local_evaluator
 ```
 
-The breadth-policy counterfactual can be reproduced with:
+The breadth policy is calibrated with a scenario-stratified 160/40
+development/validation split. The script records each ranking trajectory once,
+compares the fixed `(1,1,3)`, `(1,2,3)`, `(1,3,5)`, `(1,1,5)`, and `(1,3,10)`
+schedules plus full breadth, and searches 1,944 adaptive margin/entropy policy
+configurations. Only the development fold selects the runtime parameters; the
+validation fold is reported untouched in
+`docs/recommendation_breadth_calibration.json`.
+
+Reproduce the calibration with:
 
 ```bash
 python -m scripts.calibrate_recommendation_breadth

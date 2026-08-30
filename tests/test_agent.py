@@ -297,6 +297,43 @@ class AgentRetrievalTest(unittest.TestCase):
 
         self.assertEqual(_hard_constraint_and_expression("Shirts", evidence), "")
 
+    def test_leaf_category_match_ignores_generic_taxonomy_nodes(self) -> None:
+        store = ProductFeatureStore()
+        fields = {field: "" for field in FIELD_WEIGHTS}
+        fields["categories"] = "Clothing Shoes Jewelry Women Clothing Leggings"
+        leaf = store.add("leaf", fields)
+        deeper_fields = dict(fields)
+        deeper_fields["categories"] += " Athletic"
+        deeper = store.add("deeper", deeper_fields)
+
+        self.assertTrue(CatalogSearch._category_leaf_match(leaf, "Women Leggings"))
+        self.assertFalse(
+            CatalogSearch._category_leaf_match(deeper, "Women Leggings")
+        )
+
+    def test_constraint_sequence_match_uses_specific_active_details(self) -> None:
+        store = ProductFeatureStore()
+        matching = self._features(
+            store,
+            "matching",
+            features="100% Polyester Imported Zipper closure Machine Wash",
+        )
+        scattered = self._features(
+            store,
+            "scattered",
+            features="100% Polyester lining Imported buttons Zipper closure",
+        )
+        query = store.compile_query([
+            Evidence("polyester", 3.3, "clarification", 2),
+            Evidence("100% Polyester", 3.3, "clarification", 2),
+            Evidence("Imported", 3.3, "clarification", 3),
+            Evidence("Zipper closure", 3.3, "clarification", 3),
+            Evidence("polyester", 6.0, "override", 4),
+        ])
+
+        self.assertTrue(CatalogSearch._constraint_sequence_match(matching, query))
+        self.assertFalse(CatalogSearch._constraint_sequence_match(scattered, query))
+
     def test_feature_cache_reuses_entries_and_evicts_least_recently_used(self) -> None:
         store = ProductFeatureStore(max_size=2)
         fields = {field: "cotton shirt" for field in FIELD_WEIGHTS}
@@ -500,6 +537,14 @@ class AgentRetrievalTest(unittest.TestCase):
         )
         self.assertEqual(
             policy.limit_for(
+                6, 10, scores=decisive, hard_constraint_coverage=1.0,
+                has_hard_constraints=True, has_answerable_clarification=False,
+                turns_remaining=4,
+            ),
+            10,
+        )
+        self.assertEqual(
+            policy.limit_for(
                 3, 10, scores=ambiguous, has_answerable_clarification=True,
                 turns_remaining=7,
             ),
@@ -510,6 +555,24 @@ class AgentRetrievalTest(unittest.TestCase):
         config = AgentConfig(recommendation_policy=FULL_BREADTH_POLICY)
 
         self.assertEqual(config.recommendation_policy.limit_for(1, 10), 10)
+
+    def test_runtime_recommendation_policy_matches_calibration_artifact(self) -> None:
+        calibration = json.loads(
+            (Path(__file__).resolve().parents[1]
+             / "docs" / "recommendation_breadth_calibration.json").read_text()
+        )
+        selected = calibration["selected_policy"]["parameters"]
+        policy = RecommendationPolicy()
+
+        self.assertEqual(selected["kind"], "adaptive")
+        self.assertEqual(policy.high_margin, selected["high_margin"])
+        self.assertEqual(policy.low_margin, selected["low_margin"])
+        self.assertEqual(policy.low_entropy, selected["low_entropy"])
+        self.assertEqual(policy.high_entropy, selected["high_entropy"])
+        self.assertEqual(
+            policy.clarification_horizon, selected["clarification_horizon"]
+        )
+        self.assertEqual(policy.moderate_width, selected["moderate_width"])
 
     def test_default_agent_does_not_construct_vector_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
