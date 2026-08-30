@@ -321,7 +321,7 @@ class ProductFeatureStore:
                 )
             )
             match = BUDGET_RE.search(item.text)
-            if match:
+            if match and getattr(item, "source", "") != "exclusion":
                 budgets.append(
                     BudgetPreference(
                         mode=(match.group("mode") or "around").lower(),
@@ -330,10 +330,19 @@ class ProductFeatureStore:
                     )
                 )
 
+        excluded_tokens = {
+            token
+            for item in compiled_evidence
+            if item.source == "exclusion"
+            for token in item.tokens
+        }
         raw_tags = user_profile.get("preference_tags") if user_profile else None
         if isinstance(raw_tags, list):
             preference_terms = tuple(
-                dict.fromkeys(token for tag in raw_tags for token in terms(tag))
+                dict.fromkeys(
+                    token for tag in raw_tags for token in terms(tag)
+                    if token not in excluded_tokens
+                )
             )
         else:
             preference_terms = ()

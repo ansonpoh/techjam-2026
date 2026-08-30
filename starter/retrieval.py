@@ -76,7 +76,7 @@ def _phrase_expression(evidence: list[Evidence], limit: int = 4) -> str:
     tokenized = [
         (item, terms(item.text))
         for item in evidence
-        if item.source != "category"
+        if item.source not in {"category", "exclusion"}
     ]
     chunks = sorted(
         ((item, item_terms) for item, item_terms in tokenized if item_terms),
@@ -261,14 +261,17 @@ class CatalogSearch:
         if not state.evidence:
             return SearchResult(recommendations=[], candidates=[])
 
+        positive_evidence = [
+            item for item in state.evidence if item.source != "exclusion"
+        ]
         routes: list[tuple[float, list[dict]]] = []
         routes.append((BROAD_OR_ROUTE_WEIGHT, self._route(
-            _or_expression([item.text for item in state.evidence]), 350
+            _or_expression([item.text for item in positive_evidence]), 350
         )))
 
         latest = state.latest_evidence
         if latest is not None:
-            phrase_route = self._route(_phrase_expression(state.evidence), 180)
+            phrase_route = self._route(_phrase_expression(positive_evidence), 180)
             if phrase_route:
                 routes.append((PHRASE_ROUTE_WEIGHT, phrase_route))
 
@@ -453,7 +456,12 @@ class CatalogSearch:
                 len(item.tokens) >= 2
                 and item.normalized_query in product.normalized_text
             )
-            if item.source in hard_sources:
+            if item.source == "exclusion":
+                score -= item.weight * (
+                    policy.soft_coverage_bonus * coverage
+                    + policy.soft_exact_bonus * float(exact)
+                )
+            elif item.source in hard_sources:
                 score += item.weight * (
                     policy.hard_coverage_bonus * coverage
                     - policy.hard_missing_penalty * (1.0 - coverage)
@@ -588,7 +596,11 @@ class CatalogSearch:
         """Detect a cohesive catalog block spanning multiple disclosed details."""
         chunks: list[tuple[str, ...]] = []
         for item in query.evidence:
-            if item.source == "category" or item.is_budget or not item.tokens:
+            if (
+                item.source in {"category", "exclusion"}
+                or item.is_budget
+                or not item.tokens
+            ):
                 continue
             chunk = tuple(item.tokens)
             if chunk in chunks:
@@ -631,13 +643,14 @@ class CatalogSearch:
             field_affinity = matched_weight / (
                 len(item.tokens) * max(FIELD_WEIGHTS.values())
             )
-            score += item.weight * (1.9 * coverage + 0.4 * field_affinity)
+            item_score = item.weight * (1.9 * coverage + 0.4 * field_affinity)
 
             if len(item.tokens) >= 2 and item.normalized_query in product.normalized_text:
                 specificity = min(2.0, 0.55 + 0.22 * len(item.tokens))
-                score += item.weight * specificity
+                item_score += item.weight * specificity
             if coverage >= 0.999:
-                score += item.weight * 0.45
+                item_score += item.weight * 0.45
+            score += -item_score if item.source == "exclusion" else item_score
         if query.preference_tokens:
             matches = sum(
                 token in product.token_weights

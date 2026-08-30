@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 
 from starter.memory import LongTermUserProfile
 
@@ -31,6 +32,22 @@ GENERIC_PREFIX_RE = re.compile(
     re.I,
 )
 GENERIC_CATEGORY_ONLY = {"shoe", "shoes", "jewelry", "jewellery"}
+MATERIAL_TERMS = {
+    "cotton", "polyester", "nylon", "leather", "wool", "spandex", "silk",
+    "rayon", "linen", "suede", "denim", "fabric",
+}
+COLOR_TERMS = {
+    "black", "white", "blue", "red", "pink", "green", "brown", "gray",
+    "grey", "purple", "yellow", "orange", "navy",
+}
+
+
+class PreferenceOperation(str, Enum):
+    """How a newly observed value changes the active set for its attribute."""
+
+    REPLACE = "replace"
+    APPEND = "append"
+    EXCLUDE = "exclude"
 
 
 @dataclass(frozen=True)
@@ -40,6 +57,7 @@ class Evidence:
     source: str
     turn: int
     attribute: str | None = None
+    operation: PreferenceOperation = PreferenceOperation.APPEND
 
 
 def _clean(value: str) -> str:
@@ -48,6 +66,27 @@ def _clean(value: str) -> str:
 
 def _split_constraints(value: str) -> list[str]:
     return [cleaned for part in value.split(";") if (cleaned := _clean(part))]
+
+
+def _infer_attribute(value: str, fallback: str | None = None) -> str:
+    """Infer the facet named by a value, preserving a specific asked facet."""
+    lowered = value.casefold()
+    tokens = set(re.findall(r"[a-z0-9]+", lowered))
+    if "budget" in tokens or re.search(r"(?:\$|<=|under|below|around)\s*\$?\d", lowered):
+        return "budget"
+    if tokens & MATERIAL_TERMS:
+        return "material"
+    if tokens & COLOR_TERMS or "color" in tokens or "colour" in tokens:
+        return "color"
+    if tokens & {"size", "sizing", "width", "wide", "narrow"}:
+        return "size"
+    if tokens & {"department", "style", "fit", "sleeve", "neck", "casual", "formal"}:
+        return "style"
+    if tokens & {"hiking", "running", "gym", "winter", "outdoor", "work"}:
+        return "use_case"
+    if fallback and fallback != "other":
+        return fallback
+    return "feature" if fallback is not None else "other"
 
 
 @dataclass
@@ -62,7 +101,7 @@ class SessionState:
     long_term_profile: LongTermUserProfile | None = None
 
     def observe(self, message: str, turn: int) -> None:
-        """Convert the latest customer message into weighted positive evidence."""
+        """Convert the latest customer message into weighted preference evidence."""
         if turn <= self.last_turn:
             return
         self.last_turn = turn
@@ -77,43 +116,55 @@ class SessionState:
         negative = NEGATIVE_PREFERENCE_RE.search(message)
         if negative:
             value = _clean(negative.group(1))
-            attribute = self._answer_attribute() or "other"
-            self.evidence = [item for item in self.evidence if not (item.attribute == attribute and value.casefold() in item.text.casefold())]
-            self.evidence.append(Evidence(value, 3.8, "exclusion", turn, attribute))
-            if self.long_term_profile:
-                self.long_term_profile.reject(attribute, value)
+            attribute = _infer_attribute(value, self._answer_attribute())
+            self._apply_values(
+                [value], attribute, 3.8, "exclusion", turn,
+                PreferenceOperation.EXCLUDE,
+            )
             return
 
         is_override = bool(OVERRIDE_RE.search(message))
         if is_override:
-            # The opening preference is superseded. Explicit clarification
-            # answers remain valid unless the customer replaces them by name.
-            self.evidence = [item for item in self.evidence if item.source != "initial_preference"]
+            # "Ignore my earlier preference" explicitly retires the opening
+            # preference. The replacement operation below additionally clears
+            # clarification evidence for each attribute named by the new value.
+            self.evidence = [
+                item for item in self.evidence
+                if item.source != "initial_preference"
+            ]
 
         category_match = LOOKING_FOR_RE.search(message)
         if category_match and (not self.category_text or is_override):
             next_category = re.sub(r"\s+instead$", "", category_match.group(1), flags=re.I)
             self.category_text = _clean(next_category)
             if self.category_text:
-                self.evidence = [item for item in self.evidence if item.source != "category"]
-                self._add(self.category_text, 1.4, "category", turn)
+                self._apply_values(
+                    [self.category_text], "category", 1.4, "category", turn,
+                    PreferenceOperation.REPLACE,
+                )
 
         match = NEED_RE.search(message)
         if match:
-            for value in _split_constraints(match.group(1)):
-                self._add(value, 6.0, "override", turn)  # Boosted weight for faster recovery
+            self._apply_grouped_values(
+                _split_constraints(match.group(1)), 6.0, "override", turn,
+                PreferenceOperation.REPLACE,
+            )
             return
 
         match = REQUIREMENT_RE.search(message)
         if match:
-            for value in _split_constraints(match.group(1)):
-                self._add(value, 3.8, "hard_constraint", turn, self._answer_attribute())
+            self._apply_grouped_values(
+                _split_constraints(match.group(1)), 3.8, "hard_constraint", turn,
+                PreferenceOperation.APPEND,
+            )
             return
 
         match = MATTERS_RE.search(message)
         if match:
-            for value in _split_constraints(match.group(1)):
-                self._add(value, 3.3, "clarification", turn, self._answer_attribute())
+            self._apply_grouped_values(
+                _split_constraints(match.group(1)), 3.3, "clarification", turn,
+                PreferenceOperation.APPEND,
+            )
             return
 
         if category_match:
@@ -123,17 +174,87 @@ class SessionState:
             )
             remainder = _clean(remainder)
             if remainder:
-                self._add(remainder, 1.8, "initial_preference", turn)
+                self._apply_grouped_values(
+                    [remainder], 1.8, "initial_preference", turn,
+                    PreferenceOperation.APPEND,
+                )
             return
 
         if not re.search(r"options are not quite right|ask me about", message, re.I):
-            self._add(
-                message,
-                2.5 if turn > 1 else 2.0,
-                "clarification",
-                turn,
-                self._answer_attribute(),
+            self._apply_grouped_values(
+                [message], 2.5 if turn > 1 else 2.0, "clarification", turn,
+                PreferenceOperation.APPEND,
             )
+
+    def _apply_grouped_values(
+        self,
+        values: list[str],
+        weight: float,
+        source: str,
+        turn: int,
+        operation: PreferenceOperation,
+    ) -> None:
+        """Apply one operation to each affected attribute as a value set."""
+        grouped: dict[str | None, list[str]] = {}
+        fallback = self._answer_attribute()
+        for value in values:
+            attribute = (
+                _infer_attribute(value, fallback)
+                if operation == PreferenceOperation.REPLACE
+                else fallback
+            )
+            grouped.setdefault(attribute, []).append(value)
+        for attribute, attribute_values in grouped.items():
+            self._apply_values(
+                attribute_values, attribute, weight, source, turn, operation
+            )
+
+    def _apply_values(
+        self,
+        values: list[str],
+        attribute: str | None,
+        weight: float,
+        source: str,
+        turn: int,
+        operation: PreferenceOperation,
+    ) -> None:
+        """Replace, append to, or exclude from one attribute's active set."""
+        cleaned = [value for raw in values if (value := _clean(raw))]
+        if not cleaned:
+            return
+        if operation == PreferenceOperation.REPLACE:
+            self.evidence = [
+                item for item in self.evidence if item.attribute != attribute
+            ]
+        elif operation == PreferenceOperation.EXCLUDE:
+            for value in cleaned:
+                self.evidence = [
+                    item for item in self.evidence
+                    if item.source == "category"
+                    or item.source == "exclusion"
+                    or not self._conflicts_with_exclusion(item, value, attribute)
+                ]
+
+        for value in cleaned:
+            self._add(value, weight, source, turn, attribute, operation)
+            if self.long_term_profile and operation == PreferenceOperation.EXCLUDE:
+                self.long_term_profile.reject(attribute, value)
+
+    @staticmethod
+    def _conflicts_with_exclusion(
+        item: Evidence, value: str, attribute: str
+    ) -> bool:
+        """Return whether a rejection supersedes an earlier positive preference."""
+        attributes_overlap = (
+            item.attribute in {None, "other"}
+            or attribute == "other"
+            or item.attribute == attribute
+        )
+        if not attributes_overlap:
+            return False
+        excluded = value.casefold()
+        positive = item.text.casefold()
+        return excluded in positive or positive in excluded
 
     def _answer_attribute(self) -> str | None:
         return self.asked_attributes[-1] if self.asked_attributes else None
@@ -145,6 +266,7 @@ class SessionState:
         source: str,
         turn: int,
         attribute: str | None = None,
+        operation: PreferenceOperation = PreferenceOperation.APPEND,
     ) -> None:
         text = _clean(text)
         if not text:
@@ -153,13 +275,16 @@ class SessionState:
         if any(item.text.casefold() == key and item.source == source for item in self.evidence):
             return
         self.evidence.append(
-            Evidence(text=text, weight=weight, source=source, turn=turn, attribute=attribute)
+            Evidence(
+                text=text, weight=weight, source=source, turn=turn,
+                attribute=attribute, operation=operation,
+            )
         )
         if self.long_term_profile:
             self.long_term_profile.observe(
                 attribute or "other", text, turn,
                 durable=bool(DURABLE_PREFERENCE_RE.search(text)),
-                replacement=source == "override",
+                replacement=operation == PreferenceOperation.REPLACE,
             )
 
     def record_question(self, attribute: str) -> None:
@@ -182,6 +307,8 @@ class SessionState:
                     category = _clean(item.text)
                     if category:
                         seen.add(category.casefold())
+                continue
+            if item.source == "exclusion":
                 continue
             value = _clean(GENERIC_PREFIX_RE.sub("", item.text))
             if (

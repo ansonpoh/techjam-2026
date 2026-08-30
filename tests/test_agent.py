@@ -12,7 +12,7 @@ from starter.config import (
     FULL_BREADTH_POLICY,
     RecommendationPolicy,
 )
-from starter.dialogue import Evidence, SessionState
+from starter.dialogue import Evidence, PreferenceOperation, SessionState
 from starter.product_features import FIELD_WEIGHTS, ProductFeatureStore, terms
 from starter.question_planner import AdaptiveQuestionPlanner
 from starter.ranking import (
@@ -25,6 +25,8 @@ from starter.retrieval import (
     CatalogSearch,
     QUALITY_REVIEW_WEIGHT,
     _hard_constraint_and_expression,
+    _or_expression,
+    _phrase_expression,
 )
 
 
@@ -100,12 +102,67 @@ class DialogueStateTest(unittest.TestCase):
         self.assertIn("black", evidence)
         self.assertNotIn("i prefer red", evidence)
 
+    def test_override_replaces_only_the_active_values_for_its_attribute(self) -> None:
+        state = SessionState(user_profile={})
+        state.observe("I'm looking for Shoes. I prefer red.", 1)
+        state.record_question("material")
+        state.observe("For that, what matters is: leather.", 2)
+        state.record_question("color")
+        state.observe("For that, what matters is: blue.", 3)
+
+        state.observe("Actually, what I need is: black.", 4)
+
+        active = {(item.attribute, item.text.lower()) for item in state.evidence}
+        self.assertIn(("material", "leather"), active)
+        self.assertIn(("color", "black"), active)
+        self.assertNotIn(("color", "i prefer red"), active)
+        self.assertNotIn(("color", "blue"), active)
+        self.assertEqual(state.evidence[-1].operation, PreferenceOperation.REPLACE)
+
+    def test_append_keeps_multiple_values_in_one_attribute_set(self) -> None:
+        state = SessionState(user_profile={})
+        state.observe("I'm looking for Shoes, but I'm still exploring.", 1)
+        state.record_question("material")
+        state.observe("For that, what matters is: leather; suede.", 2)
+
+        material = [
+            item.text.lower() for item in state.evidence
+            if item.attribute == "material"
+        ]
+        self.assertEqual(material, ["leather", "suede"])
+        self.assertTrue(all(
+            item.operation == PreferenceOperation.APPEND
+            for item in state.evidence if item.attribute == "material"
+        ))
+
     def test_no_preference_is_not_positive_search_evidence(self) -> None:
         state = SessionState(user_profile={})
         state.observe("I'm looking for Jackets, but I'm still exploring.", 1)
         state.record_question("other")
         state.observe("I don't have a preference for other; please use your judgment.", 2)
         self.assertEqual([item.text.lower() for item in state.evidence], ["jackets"])
+
+    def test_exclusion_supersedes_conflicting_positive_evidence(self) -> None:
+        state = SessionState(user_profile={})
+        state.observe("I'm looking for Shoes. I prefer leather.", 1)
+        state.record_question("material")
+        state.observe("I don't want leather.", 2)
+
+        self.assertNotIn("i prefer leather", [item.text.lower() for item in state.evidence])
+        self.assertEqual(state.evidence[-1].source, "exclusion")
+
+    def test_exclusion_is_absent_from_positive_query_routes(self) -> None:
+        evidence = [
+            Evidence("Shoes", 1.4, "category", 1),
+            Evidence("leather", 3.8, "exclusion", 2, "material"),
+        ]
+        state = SessionState(user_profile={}, evidence=evidence, category_text="Shoes")
+
+        self.assertNotIn("leather", _or_expression([
+            item.text for item in evidence if item.source != "exclusion"
+        ]))
+        self.assertNotIn("leather", _phrase_expression(evidence))
+        self.assertNotIn("leather", state.semantic_query() or "")
 
 
 class IntentRouterTest(unittest.TestCase):
@@ -376,6 +433,62 @@ class AgentRetrievalTest(unittest.TestCase):
         cached = CatalogSearch._constraint_score(product, query)
         previous = _legacy_constraint_score(raw_product, evidence, profile)
         self.assertAlmostEqual(cached, previous, places=12)
+
+    def test_exclusion_penalizes_matching_product_and_filters_profile_bonus(self) -> None:
+        store = ProductFeatureStore()
+        leather = self._features(store, "leather", title="Leather walking shoe")
+        canvas = self._features(store, "canvas", title="Canvas walking shoe")
+        query = store.compile_query(
+            [Evidence("leather", 3.8, "exclusion", 2, "material")],
+            {"preference_tags": ["leather", "comfort"]},
+        )
+
+        self.assertLess(
+            CatalogSearch._constraint_score(leather, query),
+            CatalogSearch._constraint_score(canvas, query),
+        )
+        self.assertNotIn("leather", query.preference_tokens)
+
+    def test_exclusion_reranks_non_matching_product_end_to_end(self) -> None:
+        rows = [
+            {
+                "parent_asin": "LEATHER", "title": "Premium leather walking shoe",
+                "categories": ["Shoes"], "features": ["leather comfort"],
+                "details": {}, "store": "Example", "description": [], "price": 40,
+                "average_rating": 5.0, "rating_number": 10000,
+            },
+            {
+                "parent_asin": "CANVAS", "title": "Canvas walking shoe",
+                "categories": ["Shoes"], "features": ["canvas comfort"],
+                "details": {}, "store": "Example", "description": [], "price": 40,
+                "average_rating": 3.0, "rating_number": 1,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "catalog.jsonl"
+            catalog.write_text(
+                "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+            )
+            search = CatalogSearch(catalog)
+            state = SessionState(user_profile={}, category_text="Shoes")
+            state.evidence.extend([
+                Evidence("Shoes", 1.4, "category", 1),
+                Evidence("leather", 3.8, "exclusion", 2, "material"),
+            ])
+            try:
+                with patch.object(search, "_route", wraps=search._route) as route:
+                    ranked = search.search(state, limit=2)
+                self.assertTrue(route.call_args_list)
+                self.assertTrue(all(
+                    "leather" not in call.args[0].casefold()
+                    for call in route.call_args_list
+                ))
+            finally:
+                search.close()
+
+        self.assertEqual([parent_asin for parent_asin, _ in ranked], [
+            "CANVAS", "LEATHER",
+        ])
 
     def test_popularity_weight_is_reduced_and_bounded(self) -> None:
         store = ProductFeatureStore()

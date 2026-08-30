@@ -54,9 +54,10 @@ download, or network access during evaluation.
 
 The pipeline has six stages:
 
-1. `starter.dialogue.SessionState` turns each message into weighted positive
+1. `starter.dialogue.SessionState` turns each message into weighted preference
    evidence, tracks requested attributes, ignores explicit no-preference
-   answers, and removes superseded opening preferences on intent override.
+   answers, and applies replace, append, or exclude operations to each
+   attribute's active value set.
 2. `starter.retrieval.CatalogSearch` generates candidates through accumulated
    keyword, exact-phrase, and category routes using a weighted SQLite FTS5
    index.
@@ -85,7 +86,7 @@ The current public-set results are:
 | Agent | Hit Rate@10 | MRR | MTTC | Efficiency | TechnicalScore |
 |---|---:|---:|---:|---:|---:|
 | Released BM25 baseline | 0.125 | 0.068034 | 9.81 | 0.119 | 0.106710 |
-| Stateful adaptive multi-route agent | **1.000** | **0.952167** | **2.170** | **0.8830** | **0.962250** |
+| Stateful adaptive multi-route agent | **1.000** | **0.952222** | **2.170** | **0.8830** | **0.962267** |
 
 Scenario Hit Rate@10 is `1.0` for Buying, Intent Override, Browsing, and
 Boundary. These are public development-set measurements, not estimates of the
