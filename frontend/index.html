@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SEAM — conversational search agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #11161d;
+    --panel: #1a2330;
+    --panel-2: #202b3a;
+    --paper: #f2ede1;
+    --paper-2: #e9e2d1;
+    --ink: #eae7dc;
+    --ink-dim: #aeb6c4;
+    --muted: #6f7c8f;
+    --brass: #cc9f2c;
+    --brass-dim: #8a7127;
+    --thread: #c1443c;
+    --line: rgba(234,231,220,0.10);
+    --line-strong: rgba(234,231,220,0.18);
+  }
+  *{ box-sizing: border-box; }
+  html,body{ height:100%; }
+  body{
+    margin:0;
+    background:
+      radial-gradient(1200px 600px at 15% -10%, rgba(204,159,44,0.07), transparent 60%),
+      radial-gradient(900px 500px at 100% 0%, rgba(193,68,60,0.06), transparent 55%),
+      var(--bg);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection{ background: var(--brass); color:#161006; }
+  ::-webkit-scrollbar{ width:8px; height:8px; }
+  ::-webkit-scrollbar-thumb{ background: var(--line-strong); border-radius:8px; }
+
+  .shell{ max-width: 1180px; margin: 0 auto; padding: 28px 22px 60px; }
+
+  /* ---------- HEADER ---------- */
+  header{ margin-bottom: 22px; }
+  .brand-row{ display:flex; align-items:flex-end; justify-content:space-between; gap:24px; flex-wrap: wrap; }
+  .brand h1{
+    font-family:'Oswald', sans-serif;
+    font-weight:700;
+    letter-spacing: 0.04em;
+    font-size: clamp(2.1rem, 4vw, 2.9rem);
+    margin: 0 0 4px;
+    text-transform: uppercase;
+  }
+  .brand h1 span{ color: var(--brass); }
+  .brand p{ margin:0; color: var(--ink-dim); font-size: 0.92rem; max-width: 46ch; line-height:1.5; }
+
+  .rail{
+    display:flex; gap:10px; align-items:center;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 6px;
+  }
+  .rail-track{
+    font-family:'IBM Plex Mono', monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 8px 16px;
+    border-radius: 999px;
+    color: var(--muted);
+    transition: all .35s ease;
+    white-space: nowrap;
+  }
+  .rail-track.active.buying{ background: var(--brass); color:#191204; font-weight:600; }
+  .rail-track.active.browsing{ background: var(--thread); color:#1b0b09; font-weight:600; }
+
+  /* ---------- STITCH TURN TRACKER ---------- */
+  .stitch-wrap{ margin-top: 18px; }
+  .stitch-label{
+    display:flex; justify-content:space-between; align-items:baseline;
+    font-family:'IBM Plex Mono', monospace; font-size: 0.72rem; color: var(--muted);
+    letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 8px;
+  }
+  .stitch-label b{ color: var(--ink); font-weight:600; }
+  .stitch-svg{ width:100%; height: 34px; display:block; }
+  .stitch-dash{ stroke: var(--line-strong); stroke-width:2; stroke-dasharray: 6 8; }
+  .stitch-fill{ stroke: var(--brass); stroke-width:2; stroke-dasharray: 6 8; transition: stroke-dashoffset .5s ease; }
+  .stitch-node{ fill: var(--panel); stroke: var(--line-strong); stroke-width: 1.5; transition: all .4s ease; }
+  .stitch-node.done{ fill: var(--brass); stroke: var(--brass); }
+  .stitch-node.now{ fill: var(--thread); stroke: var(--thread); }
+
+  /* ---------- MAIN GRID ---------- */
+  main{ display:grid; grid-template-columns: 1.05fr 1fr; gap: 20px; margin-top: 26px; }
+  @media (max-width: 880px){ main{ grid-template-columns: 1fr; } }
+
+  .panel{
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    display:flex; flex-direction:column;
+    min-height: 560px;
+    overflow:hidden;
+  }
+  .panel-head{
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
+    display:flex; align-items:center; justify-content:space-between;
+  }
+  .panel-head h2{
+    font-family:'Oswald', sans-serif; font-size: 0.95rem; letter-spacing:0.08em;
+    text-transform:uppercase; margin:0; font-weight:600; color: var(--ink-dim);
+  }
+  .panel-head .count{ font-family:'IBM Plex Mono', monospace; font-size:0.75rem; color: var(--muted); }
+
+  /* ---------- CHAT ---------- */
+  #chat-log{ flex:1; overflow-y:auto; padding: 18px; display:flex; flex-direction:column; gap: 12px; }
+  .msg{ display:flex; gap: 10px; max-width: 90%; }
+  .msg.user{ align-self:flex-end; flex-direction: row-reverse; }
+  .bubble{
+    padding: 11px 14px; border-radius: 12px; font-size: 0.92rem; line-height:1.5;
+    border: 1px solid var(--line);
+  }
+  .msg.agent .bubble{ background: var(--panel-2); border-top-left-radius:3px; }
+  .msg.user .bubble{ background: var(--brass); color:#181205; border-top-right-radius:3px; border-color: transparent; font-weight:500; }
+  .avatar{
+    flex: 0 0 26px; width:26px; height:26px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    font-family:'IBM Plex Mono', monospace; font-size:0.65rem; font-weight:600;
+    border:1px solid var(--line-strong); color: var(--ink-dim);
+  }
+  .msg.agent .avatar{ background: var(--panel-2); }
+  .msg.user .avatar{ background: transparent; }
+  .typing{ display:flex; gap:4px; padding: 6px 4px; }
+  .typing i{ width:5px; height:5px; border-radius:50%; background: var(--muted); animation: blink 1.1s infinite; }
+  .typing i:nth-child(2){ animation-delay:.15s; } .typing i:nth-child(3){ animation-delay:.3s; }
+  @keyframes blink{ 0%,80%,100%{ opacity:.25; } 40%{ opacity:1; } }
+
+  .composer{ border-top: 1px solid var(--line); padding: 12px; display:flex; gap:8px; }
+  .composer input{
+    flex:1; background: var(--panel-2); border: 1px solid var(--line-strong);
+    border-radius: 10px; padding: 11px 13px; color: var(--ink); font-family:'IBM Plex Sans',sans-serif;
+    font-size: 0.9rem; outline:none;
+  }
+  .composer input:focus{ border-color: var(--brass); }
+  .composer input::placeholder{ color: var(--muted); }
+  .composer button{
+    background: var(--brass); color:#181205; border:none; border-radius:10px;
+    padding: 0 18px; font-weight:600; font-family:'IBM Plex Sans', sans-serif; font-size:0.88rem;
+    cursor:pointer; transition: filter .15s ease;
+  }
+  .composer button:hover{ filter: brightness(1.08); }
+  .composer button:disabled{ opacity:.4; cursor:not-allowed; }
+  .chips{ display:flex; flex-wrap:wrap; gap:6px; padding: 0 12px 12px; }
+  .chip{
+    font-family:'IBM Plex Mono', monospace; font-size:0.68rem; color: var(--ink-dim);
+    border:1px solid var(--line-strong); padding:5px 10px; border-radius: 999px; cursor:pointer;
+    background: var(--panel-2); transition: all .15s ease;
+  }
+  .chip:hover{ border-color: var(--brass); color: var(--brass); }
+
+  /* ---------- RECOMMENDATIONS ---------- */
+  #rec-list{ flex:1; overflow-y:auto; padding: 16px; display:grid; gap: 12px; align-content:start; }
+  .empty-state{
+    margin:auto; text-align:center; color: var(--muted); padding: 40px 20px; font-size:0.88rem; max-width:32ch;
+  }
+  .empty-state svg{ width:38px; height:38px; margin-bottom:10px; opacity:.5; }
+
+  .card{
+    position:relative;
+    background: var(--paper);
+    color: #221c10;
+    border-radius: 10px;
+    padding: 14px 16px 14px 22px;
+    display:grid; grid-template-columns: 1fr auto; gap: 4px 14px;
+    animation: rise .4s ease both;
+  }
+  @keyframes rise{ from{ opacity:0; transform: translateY(6px); } to{ opacity:1; transform:none; } }
+  .card::before{
+    content:''; position:absolute; left:9px; top:16px; bottom:16px; width:2px;
+    background: repeating-linear-gradient(180deg, var(--thread) 0 4px, transparent 4px 8px);
+    border-radius: 2px;
+  }
+  .card::after{
+    content:''; position:absolute; left:5px; top:12px; width:8px; height:8px; border-radius:50%;
+    background: var(--bg); border: 1.5px solid var(--paper-2);
+  }
+  .card .name{ font-family:'Oswald', sans-serif; font-weight:600; font-size:1rem; grid-column:1; letter-spacing:0.01em; }
+  .card .price{ font-family:'IBM Plex Mono', monospace; font-weight:500; font-size:0.95rem; grid-column:2; text-align:right; color:#5a4413; }
+  .card .cat{ grid-column:1/-1; font-size:0.76rem; color:#7a6f52; text-transform:uppercase; letter-spacing:0.05em; font-family:'IBM Plex Mono', monospace; }
+  .card .tags{ grid-column:1/-1; display:flex; flex-wrap:wrap; gap:5px; margin-top:6px; }
+  .tag{ font-size:0.68rem; padding:3px 8px; border-radius:999px; background:var(--paper-2); font-family:'IBM Plex Mono', monospace; color:#4c4327; }
+  .tag.hit{ background:#221c10; color: var(--brass); }
+  .card .rating{ grid-column:1/-1; font-size:0.75rem; color:#8a7c50; margin-top:2px; }
+  .card .rank{
+    position:absolute; top:-8px; right:10px; background: var(--thread); color:#fbe9e6;
+    font-family:'IBM Plex Mono', monospace; font-size:0.68rem; padding:2px 8px; border-radius:999px;
+    font-weight:600;
+  }
+
+  footer{ margin-top:22px; text-align:center; color: var(--muted); font-size:0.76rem; font-family:'IBM Plex Mono', monospace; }
+  footer a{ color: var(--brass); text-decoration:none; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header>
+    <div class="brand-row">
+      <div class="brand">
+        <h1>SEAM<span>.</span></h1>
+        <p>A conversational search agent that finds your fit, turn by turn — routes buying intent from browsing intent, and asks only the questions worth asking.</p>
+      </div>
+      <div class="rail">
+        <div class="rail-track buying" id="rail-buying">Buying</div>
+        <div class="rail-track browsing active" id="rail-browsing">Browsing</div>
+      </div>
+    </div>
+
+    <div class="stitch-wrap">
+      <div class="stitch-label"><span>Session progress</span><span>Turn <b id="turn-count">0</b> of 10</span></div>
+      <svg class="stitch-svg" id="stitch-svg" viewBox="0 0 1000 34" preserveAspectRatio="none"></svg>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="panel-head"><h2>Conversation</h2><span class="count" id="msg-count">0 messages</span></div>
+      <div id="chat-log"></div>
+      <div class="chips" id="quick-chips"></div>
+      <div class="composer">
+        <input type="text" id="chat-input" placeholder="Tell SEAM what you're after…" autocomplete="off">
+        <button id="send-btn">Send</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Matches</h2><span class="count" id="rec-count">0 shown</span></div>
+      <div id="rec-list">
+        <div class="empty-state">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <div>Matches will line up here once you tell SEAM what you're shopping for.</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>live frontend for a dual-track retrieval &amp; adaptive-clarification shopping agent</footer>
+</div>
+
+<script>
+const DEFAULT_PROFILE = {
+  purchase_frequency: "new demo session",
+  average_prior_rating: 4.5,
+  rating_style: "usually positive",
+  preference_tags: [],
+  summary: "Interactive video demonstration profile."
+};
+
+const state = {
+  turn: 0,
+  mode: "browsing",
+  sessionId: globalThis.crypto?.randomUUID?.() ??
+    `demo-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  busy: true
+};
+
+const chatLog = document.getElementById("chat-log");
+const recList = document.getElementById("rec-list");
+const input = document.getElementById("chat-input");
+const sendBtn = document.getElementById("send-btn");
+const msgCountEl = document.getElementById("msg-count");
+const recCountEl = document.getElementById("rec-count");
+const turnCountEl = document.getElementById("turn-count");
+const railBuying = document.getElementById("rail-buying");
+const railBrowsing = document.getElementById("rail-browsing");
+const chipsWrap = document.getElementById("quick-chips");
+
+let msgTotal = 0;
+
+function setBusy(busy) {
+  state.busy = busy;
+  input.disabled = busy || state.turn >= 10;
+  sendBtn.disabled = busy || state.turn >= 10;
+}
+
+function addMessage(role, text) {
+  msgTotal++;
+  msgCountEl.textContent = `${msgTotal} message${msgTotal === 1 ? "" : "s"}`;
+  const row = document.createElement("div");
+  row.className = `msg ${role}`;
+  const avatar = document.createElement("div");
+  avatar.className = "avatar";
+  avatar.textContent = role === "agent" ? "S" : "Y";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = text;
+  row.appendChild(avatar);
+  row.appendChild(bubble);
+  chatLog.appendChild(row);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function showTyping() {
+  const row = document.createElement("div");
+  row.className = "msg agent";
+  row.id = "typing-row";
+  row.innerHTML = '<div class="avatar">S</div><div class="bubble"><div class="typing"><i></i><i></i><i></i></div></div>';
+  chatLog.appendChild(row);
+  chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function hideTyping() {
+  document.getElementById("typing-row")?.remove();
+}
+
+function renderRail() {
+  railBuying.classList.toggle("active", state.mode === "buying");
+  railBrowsing.classList.toggle("active", state.mode === "browsing");
+}
+
+function renderStitch() {
+  turnCountEl.textContent = state.turn;
+  const svg = document.getElementById("stitch-svg");
+  const count = 10;
+  const width = 1000;
+  const y = 17;
+  const padding = 20;
+  const step = (width - padding * 2) / (count - 1);
+  let markup = `<line class="stitch-dash" x1="${padding}" y1="${y}" x2="${width - padding}" y2="${y}"/>`;
+  if (state.turn > 0) {
+    const filledX = padding + step * Math.min(state.turn, count - 1);
+    markup += `<line class="stitch-fill" x1="${padding}" y1="${y}" x2="${filledX}" y2="${y}"/>`;
+  }
+  for (let index = 0; index < count; index++) {
+    const x = padding + step * index;
+    let className = "stitch-node";
+    if (index < state.turn) className += " done";
+    else if (index === state.turn) className += " now";
+    markup += `<circle class="${className}" cx="${x}" cy="${y}" r="5"/>`;
+  }
+  svg.innerHTML = markup;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function formatPrice(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? `${number.toFixed(2)}` : "—";
+}
+
+function formatRating(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? `★ ${number.toFixed(1)}` : "No rating";
+}
+
+function renderRecommendations(recommendations) {
+  recList.innerHTML = "";
+  recCountEl.textContent = `${recommendations.length} shown`;
+  if (!recommendations.length) {
+    recList.innerHTML = `<div class="empty-state">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <div>No ranked matches are ready yet. Answer the next clarification to narrow the catalog.</div>
+    </div>`;
+    return;
+  }
+
+  recommendations.forEach((recommendation, index) => {
+    const tags = Array.isArray(recommendation.tags)
+      ? recommendation.tags.slice(0, 3)
+      : [];
+    const tagMarkup = tags.length
+      ? tags.map(tag => `<span class="tag hit">${escapeHtml(tag)}</span>`).join("")
+      : '<span class="tag">catalog match</span>';
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `
+      <span class="rank">#${index + 1}</span>
+      <div class="name">${escapeHtml(recommendation.title || recommendation.parent_asin)}</div>
+      <div class="price">${formatPrice(recommendation.price)}</div>
+      <div class="cat">${escapeHtml(recommendation.category || recommendation.parent_asin)}</div>
+      <div class="tags">${tagMarkup}</div>
+      <div class="rating">${formatRating(recommendation.average_rating)} · score ${Number(recommendation.score || 0).toFixed(3)}</div>
+    `;
+    recList.appendChild(card);
+  });
+}
+
+function suggestionsFromMessage(message) {
+  const match = String(message).match(/for example,\s*(.+?)\.\s*Which/i);
+  if (!match) return [];
+  return match[1].split(",").map(value => value.trim()).filter(Boolean).slice(0, 3);
+}
+
+function suggestChips(attribute, message = "") {
+  chipsWrap.innerHTML = "";
+  if (!attribute) return;
+  const suggestions = suggestionsFromMessage(message);
+  for (const suggestion of suggestions) {
+    const chip = document.createElement("div");
+    chip.className = "chip";
+    chip.textContent = suggestion;
+    chip.onclick = () => {
+      input.value = suggestion;
+      input.focus();
+    };
+    chipsWrap.appendChild(chip);
+  }
+  const skipChip = document.createElement("div");
+  skipChip.className = "chip";
+  skipChip.textContent = `no preference for ${attribute.replaceAll("_", " ")}`;
+  skipChip.onclick = () => {
+    input.value = skipChip.textContent;
+    input.focus();
+  };
+  chipsWrap.appendChild(skipChip);
+}
+
+async function postJson(path, payload) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload)
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.error || `Request failed with status ${response.status}`);
+  }
+  return body;
+}
+
+async function initializeSession() {
+  setBusy(true);
+  renderStitch();
+  renderRail();
+  try {
+    await postJson("/api/reset", {
+      session_id: state.sessionId,
+      user_profile: DEFAULT_PROFILE
+    });
+    addMessage("agent", "Hi — I'm SEAM. What are you shopping for today?");
+  } catch (error) {
+    addMessage("agent", `I couldn't connect to the shopping agent: ${error.message}`);
+  } finally {
+    setBusy(false);
+    input.focus();
+  }
+}
+
+async function handleUserTurn(text) {
+  const cleanText = text.trim();
+  if (!cleanText || state.busy || state.turn >= 10) return;
+
+  addMessage("user", cleanText);
+  state.turn++;
+  renderStitch();
+  chipsWrap.innerHTML = "";
+  showTyping();
+  setBusy(true);
+
+  try {
+    const result = await postJson("/api/chat", {
+      session_id: state.sessionId,
+      user_message: cleanText,
+      turn: state.turn,
+      top_k: 10
+    });
+    state.mode = result.mode === "buying" ? "buying" : "browsing";
+    renderRail();
+    renderRecommendations(Array.isArray(result.recommendations) ? result.recommendations : []);
+    hideTyping();
+    addMessage("agent", result.message || "These are my best matches.");
+    suggestChips(result.ask_attribute, result.message);
+  } catch (error) {
+    hideTyping();
+    addMessage("agent", `The agent request failed: ${error.message}`);
+  } finally {
+    setBusy(false);
+    if (state.turn >= 10) {
+      input.disabled = true;
+      sendBtn.disabled = true;
+      input.placeholder = "Session complete — 10 turn limit reached";
+    } else {
+      input.focus();
+    }
+  }
+}
+
+sendBtn.addEventListener("click", () => {
+  const text = input.value;
+  input.value = "";
+  handleUserTurn(text);
+});
+
+input.addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    const text = input.value;
+    input.value = "";
+    handleUserTurn(text);
+  }
+});
+
+initializeSession();
+</script>
+</body>
+</html>
