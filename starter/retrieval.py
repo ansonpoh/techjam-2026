@@ -7,6 +7,12 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from starter.constraint_index import (
+    ConstraintIndex,
+    SQLiteConstraintIndex,
+    default_catalog_index_path,
+    open_catalog_index,
+)
 from starter.dialogue import Evidence, SessionState
 from starter.product_features import (
     BUDGET_RE,
@@ -134,13 +140,38 @@ class CatalogSearch:
         ranking_policies: RankingPolicies = DEFAULT_RANKING_POLICIES,
         intent_router: IntentRouter | None = None,
         vector_index: VectorIndex | None = None,
+        catalog_index_path: str | Path | None = None,
+        use_prebuilt_index: bool = True,
     ) -> None:
         self.catalog_path = Path(catalog_path)
-        self.connection = sqlite3.connect(":memory:")
         self.feature_store = ProductFeatureStore(max_size=feature_cache_size)
         self.ranking_policies = ranking_policies
         self.intent_router = intent_router or IntentRouter()
-        self._build_index()
+        self.catalog_index_path = (
+            Path(catalog_index_path)
+            if catalog_index_path is not None
+            else default_catalog_index_path(self.catalog_path)
+        )
+        prebuilt_connection = (
+            open_catalog_index(self.catalog_path, self.catalog_index_path)
+            if use_prebuilt_index
+            else None
+        )
+        self.using_prebuilt_index = prebuilt_connection is not None
+        if prebuilt_connection is not None:
+            self.connection = prebuilt_connection
+            self.constraint_index = SQLiteConstraintIndex(self.connection)
+            self._row_id_by_asin = {
+                str(parent_asin): int(row_id)
+                for parent_asin, row_id in self.connection.execute(
+                    "SELECT parent_asin, row_id FROM product_rows"
+                )
+            }
+        else:
+            self.connection = sqlite3.connect(":memory:")
+            self.constraint_index = ConstraintIndex()
+            self._row_id_by_asin: dict[str, int] = {}
+            self._build_index()
         self.vector_index = vector_index
         if self.vector_index is None and enable_vector_reranker:
             self.vector_index = CatalogVectorIndex(self.catalog_path)
@@ -160,9 +191,11 @@ class CatalogSearch:
         )
         batch: list[tuple[str, ...]] = []
         with self.catalog_path.open(encoding="utf-8") as handle:
-            for line in handle:
+            for row_id, line in enumerate(handle, start=1):
                 product = json.loads(line)
                 parent_asin = str(product["parent_asin"])
+                self.constraint_index.add_product(product)
+                self._row_id_by_asin[parent_asin] = row_id
                 fields = {
                     "title": _text(product.get("title")),
                     "categories": _text(product.get("categories")),
@@ -194,6 +227,20 @@ class CatalogSearch:
             )
         self.connection.commit()
 
+    def _hydrate(self, product: dict) -> dict:
+        fields = {
+            field: str(product.get(field) or "")
+            for field in FIELD_WEIGHTS
+        }
+        product["_features"] = self.feature_store.get_or_add(
+            str(product["parent_asin"]),
+            fields,
+            price=product.get("price"),
+            average_rating=product.get("average_rating"),
+            rating_number=product.get("rating_number"),
+        )
+        return product
+
     def _route(self, expression: str, limit: int) -> list[dict]:
         if not expression:
             return []
@@ -213,19 +260,37 @@ class CatalogSearch:
         products: list[dict] = []
         for row in rows:
             product = dict(zip(keys, row))
-            fields = {
-                field: str(product.get(field) or "")
-                for field in FIELD_WEIGHTS
-            }
-            product["_features"] = self.feature_store.get_or_add(
-                str(product["parent_asin"]),
-                fields,
-                price=product.get("price"),
-                average_rating=product.get("average_rating"),
-                rating_number=product.get("rating_number"),
-            )
-            products.append(product)
+            products.append(self._hydrate(product))
         return products
+
+    def _exact_constraint_route(self, state: SessionState) -> list[dict]:
+        asins = self.constraint_index.exact_intersection(
+            state.category_text,
+            (
+                item.text
+                for item in state.evidence
+                if item.source not in {"category", "exclusion"}
+            ),
+        )
+        row_ids = sorted(
+            self._row_id_by_asin[parent_asin]
+            for parent_asin in asins
+            if parent_asin in self._row_id_by_asin
+        )
+        if not row_ids:
+            return []
+        placeholders = ",".join("?" for _ in row_ids)
+        rows = self.connection.execute(
+            "SELECT parent_asin, title, categories, features, details, store, "
+            "description, price, average_rating, rating_number "
+            f"FROM products WHERE rowid IN ({placeholders})",
+            row_ids,
+        ).fetchall()
+        keys = (
+            "parent_asin", "title", "categories", "features", "details", "store",
+            "description", "price", "average_rating", "rating_number",
+        )
+        return [self._hydrate(dict(zip(keys, row))) for row in rows]
 
     def _vector_route(self, rows: list[tuple[int, float]]) -> list[dict]:
         if not rows:
@@ -264,7 +329,13 @@ class CatalogSearch:
         positive_evidence = [
             item for item in state.evidence if item.source != "exclusion"
         ]
+        exact_constraint_route = self._exact_constraint_route(state)
+        exact_constraint_matches = {
+            str(product["parent_asin"]) for product in exact_constraint_route
+        }
         routes: list[tuple[float, list[dict]]] = []
+        if exact_constraint_route:
+            routes.append((0.0, exact_constraint_route))
         routes.append((BROAD_OR_ROUTE_WEIGHT, self._route(
             _or_expression([item.text for item in positive_evidence]), 350
         )))
@@ -405,6 +476,7 @@ class CatalogSearch:
         # requested leaf category and a cohesive sequence of disclosed details
         # then break otherwise ambiguous ties before the calibrated score.
         ranked.sort(key=lambda item: (
+            -int(item[0] in exact_constraint_matches),
             -int(
                 hard_constraint_exactness[item[0]][1] > 0
                 and hard_constraint_exactness[item[0]][0]
@@ -429,6 +501,9 @@ class CatalogSearch:
             product["_category_leaf_match"] = category_leaf_matches[parent_asin]
             product["_constraint_sequence_match"] = (
                 constraint_sequence_matches[parent_asin]
+            )
+            product["_exact_constraint_index_match"] = (
+                parent_asin in exact_constraint_matches
             )
             context.append(product)
         return SearchResult(

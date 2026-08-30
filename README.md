@@ -52,28 +52,32 @@ This repository now includes a stateful, offline-first conversational search
 agent. It uses only the Python standard library and requires no API key, model
 download, or network access during evaluation.
 
-The pipeline has six stages:
+The pipeline has seven stages:
 
 1. `starter.dialogue.SessionState` turns each message into weighted preference
    evidence, tracks requested attributes, ignores explicit no-preference
    answers, and applies replace, append, or exclude operations to each
    attribute's active value set.
-2. `starter.retrieval.CatalogSearch` generates candidates through accumulated
+2. `starter.constraint_index.ConstraintIndex` derives exact feature, detail,
+   material, colour, and category inverted maps from the catalog at startup.
+   Intersections from these maps form an uncapped candidate route and an exact
+   ranking tier; no evaluator labels or target identifiers are used.
+3. `starter.retrieval.CatalogSearch` generates additional candidates through accumulated
    keyword, exact-phrase, and category routes using a weighted SQLite FTS5
    index.
-3. Reciprocal-rank fusion combines the routes without assuming their raw
+4. Reciprocal-rank fusion combines the lexical routes without assuming their raw
    scores are calibrated.
-4. A deterministic reranker scores constraint coverage, exact metadata
+5. A deterministic reranker scores constraint coverage, exact metadata
    phrases, budget proximity, a small aggregate-profile match, and a
    log-scaled product-popularity prior. Product text is normalized once on
    first retrieval and retained in a bounded 5,000-entry LRU feature cache;
    query evidence is compiled once per turn and reused for every candidate.
-5. An adaptive question planner measures how much the live candidates differ
+6. An adaptive question planner measures how much the live candidates differ
    across material, colour, size, style, use case, price, brand, category, and
    features. It selects the facet with the greatest estimated information gain
    and generates the question from observed candidate values. There is no
    fixed question order or per-attribute question-text dictionary.
-6. An immutable recommendation policy chooses output breadth from the live
+7. An immutable recommendation policy chooses output breadth from the live
    Top-1/Top-2 margin, normalized candidate entropy, exact hard-constraint
    coverage, whether another clarification is likely to be answerable, and the
    remaining turn budget. It stays narrow for a decisive winner or a valuable
@@ -86,7 +90,7 @@ The current public-set results are:
 | Agent | Hit Rate@10 | MRR | MTTC | Efficiency | TechnicalScore |
 |---|---:|---:|---:|---:|---:|
 | Released BM25 baseline | 0.125 | 0.068034 | 9.81 | 0.119 | 0.106710 |
-| Stateful adaptive multi-route agent | **1.000** | **0.952222** | **2.170** | **0.8830** | **0.962267** |
+| Stateful agent with catalog constraint index | **1.000** | **0.959256** | **2.130** | **0.8870** | **0.965177** |
 
 Scenario Hit Rate@10 is `1.0` for Buying, Intent Override, Browsing, and
 Boundary. These are public development-set measurements, not estimates of the
@@ -99,8 +103,16 @@ diagnostic/calibration scripts.
 ```bash
 python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
+python -m scripts.build_catalog_index
 python -m evaluator.local_evaluator
 ```
+
+`scripts.build_catalog_index` preprocesses the frozen catalog into
+`data/catalog_index.sqlite3`, including both FTS5 and the six exact-constraint
+maps. Runtime verifies the catalog SHA-256 and schema version before opening
+the artifact read-only. If it is absent, corrupt, or stale, the agent safely
+rebuilds the same indices in memory, so preprocessing changes startup cost but
+not ranking behavior.
 
 The breadth policy is calibrated with a scenario-stratified 160/40
 development/validation split. The script records each ranking trajectory once,
@@ -175,9 +187,13 @@ The diagnostic script is development-only and is not imported by the Agent.
 
 - Model/API cost and reported token usage are zero. The evaluated path is
   deterministic and standard-library-only.
-- On the development machine with Python 3.13.5, building the 50,000-product
-  in-memory index took approximately 3.9 seconds. A ten-turn benchmark averaged
-  approximately 172 ms per response with adaptive question analysis. On a
+- On the development machine, preprocessing the 50,000-product catalog took
+  31.0 seconds and produced a 200.9 MiB ignored SQLite artifact. Opening the
+  verified artifact took approximately 0.46 seconds, compared with 15.8
+  seconds for the in-memory fallback. Generate it during untimed setup; if
+  setup time is included and only one Agent is constructed, the fallback is
+  faster overall. A ten-turn benchmark averaged approximately 172 ms per
+  response with adaptive question analysis. On a
   deterministic 20-session slice, a 5,000-product feature cache reduced
   evaluation time from 12.654 seconds with effectively no reuse to 9.220
   seconds, a 27.1% reduction with identical metrics. These measurements are
@@ -186,8 +202,8 @@ The diagnostic script is development-only and is not imported by the Agent.
   exact phrases are especially informative. More varied real customer language
   would benefit from an optional local semantic-retrieval route.
 - Very broad categories paired only with generic attributes can remain
-  intrinsically ambiguous. The public run misses two sessions, and private
-  performance may be lower than the development score.
+  intrinsically ambiguous, and private performance may be lower than the
+  development score.
 - The popularity feature is log-scaled and subordinate to textual constraints,
   but it can still favor established products when several candidates are
   otherwise indistinguishable.

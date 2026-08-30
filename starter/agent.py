@@ -20,6 +20,7 @@ class Agent:
         config: AgentConfig = DEFAULT_AGENT_CONFIG,
         ranking_policies: RankingPolicies = DEFAULT_RANKING_POLICIES,
         vector_index: VectorIndex | None = None,
+        catalog_index_path: str | Path | None = None,
     ) -> None:
         self.catalog_path = Path(catalog_path)
         self.config = config
@@ -29,6 +30,7 @@ class Agent:
             enable_vector_reranker=config.enable_vector_reranker,
             ranking_policies=ranking_policies,
             vector_index=vector_index,
+            catalog_index_path=catalog_index_path,
         )
         self.question_planner = AdaptiveQuestionPlanner(self.search.feature_store)
         self._sessions: dict[str, SessionState] = {}

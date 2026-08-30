@@ -6,12 +6,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts.build_catalog_index import build_catalog_index
 from starter.agent import Agent
 from starter.config import (
     AgentConfig,
     FULL_BREADTH_POLICY,
     RecommendationPolicy,
 )
+from starter.constraint_index import ConstraintIndex, normalize_constraint
 from starter.dialogue import Evidence, PreferenceOperation, SessionState
 from starter.product_features import FIELD_WEIGHTS, ProductFeatureStore, terms
 from starter.question_planner import AdaptiveQuestionPlanner
@@ -348,6 +350,91 @@ class AgentRetrievalTest(unittest.TestCase):
             _hard_constraint_and_expression("Shirts", evidence),
             '"shirts" AND "sleeveless design" AND "100 polyester"',
         )
+
+    def test_catalog_constraint_index_intersects_category_and_exact_values(self) -> None:
+        index = ConstraintIndex()
+        index.add_product({
+            "parent_asin": "MATCH",
+            "title": "Dress",
+            "categories": ["Clothing", "Women", "Dresses"],
+            "features": ["100% Cotton"],
+            "details": {"Department": "Womens", "Color": "Blue"},
+        })
+        index.add_product({
+            "parent_asin": "WRONG_CATEGORY",
+            "title": "Shirt",
+            "categories": ["Clothing", "Men", "Shirts"],
+            "features": ["100% Cotton"],
+            "details": {"Department": "Womens", "Color": "Blue"},
+        })
+
+        self.assertEqual(normalize_constraint("100% Cotton"), "100 cotton")
+        self.assertEqual(
+            index.exact_intersection(
+                "Women Dresses", ["100% cotton", "Department: Womens"]
+            ),
+            {"MATCH"},
+        )
+
+    def test_exact_constraint_index_admits_candidates_without_fts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = self._write_catalog(directory)
+            search = CatalogSearch(catalog)
+            state = SessionState(user_profile={}, category_text="Shoes")
+            state.evidence.extend([
+                Evidence("Shoes", 1.4, "category", 1),
+                Evidence("full grain leather", 3.8, "hard_constraint", 1),
+            ])
+            try:
+                with patch.object(search, "_route", return_value=[]):
+                    result = search.search_with_context(state, limit=2)
+            finally:
+                search.close()
+
+        self.assertEqual(result.recommendations[0][0], "B")
+        self.assertTrue(result.candidates[0]["_exact_constraint_index_match"])
+
+    def test_prebuilt_catalog_index_preserves_rankings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = self._write_catalog(directory)
+            state = SessionState(user_profile={}, category_text="Shoes")
+            state.evidence.extend([
+                Evidence("Shoes", 1.4, "category", 1),
+                Evidence("full grain leather", 3.8, "hard_constraint", 1),
+            ])
+            in_memory = CatalogSearch(catalog, use_prebuilt_index=False)
+            try:
+                expected = in_memory.search(state, limit=2)
+            finally:
+                in_memory.close()
+
+            artifact = build_catalog_index(catalog)
+            prebuilt = CatalogSearch(catalog)
+            try:
+                actual = prebuilt.search(state, limit=2)
+                self.assertTrue(prebuilt.using_prebuilt_index)
+            finally:
+                prebuilt.close()
+
+        self.assertTrue(artifact.name.endswith("_index.sqlite3"))
+        self.assertEqual(actual, expected)
+
+    def test_stale_prebuilt_catalog_index_falls_back_safely(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = self._write_catalog(directory)
+            build_catalog_index(catalog)
+            catalog.write_text(
+                catalog.read_text(encoding="utf-8").replace(
+                    "Everyday Boot", "Everyday Boots", 1
+                ),
+                encoding="utf-8",
+            )
+            search = CatalogSearch(catalog)
+            try:
+                self.assertFalse(search.using_prebuilt_index)
+                self.assertTrue(search.search)
+            finally:
+                search.close()
 
     def test_hard_constraint_route_is_disabled_without_hard_constraints(self) -> None:
         evidence = [Evidence("lightweight", 2.5, "clarification", 2)]
