@@ -151,7 +151,7 @@ Only exact `parent_asin` equality is scored.
 | Name | Contribution |
 |---|---|
 | Naren | _Add contribution_ |
-| Anson | _Add contribution_ |
+| Anson | _Led the development and optimisation of SEAM’s offline conversational product-search engine, implementing constraint-aware retrieval, adaptive ranking, confidence-driven recommendations, dynamic clarification planning, a preprocessed catalogue index and built extensive evaluation and testing infrastructure._ |
 | Joseph | _Contributed to Runtime Adaptation by leveraging accumulated dialog history to perform Personalized Context Distillation, continuously updating short-term session states and long-term user profiles._ |
 | Harry | _Add contribution_ |
 
