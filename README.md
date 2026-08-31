@@ -9,7 +9,7 @@ Public development-set results on 200 released sessions:
 | Agent | Hit Rate@10 | MRR | MTTC | Efficiency | TechnicalScore |
 |---|---:|---:|---:|---:|---:|
 | Released BM25 baseline | 0.125 | 0.068034 | 9.81 | 0.119 | 0.106710 |
-| **SEAM** | **1.000** | **0.963173** | **2.120** | **0.888** | **0.966552** |
+| **SEAM** | **1.000** | **0.965673** | **2.130** | **0.887** | **0.967102** |
 
 SEAM reaches a 100% Hit Rate@10 across Buying, Browsing, Intent Override, and Boundary scenarios. These are public development measurements, not private leaderboard estimates.
 
