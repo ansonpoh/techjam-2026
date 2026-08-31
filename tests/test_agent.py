@@ -348,13 +348,20 @@ class AgentRetrievalTest(unittest.TestCase):
         parent_asin: str,
         *,
         title: str = "",
+        categories: str = "",
         features: str = "",
+        details: str = "",
         price: float = 50.0,
         average_rating: float = 4.0,
         rating_number: int = 1,
     ):
         fields = {field: "" for field in FIELD_WEIGHTS}
-        fields.update({"title": title, "features": features})
+        fields.update({
+            "title": title,
+            "categories": categories,
+            "features": features,
+            "details": details,
+        })
         return store.add(
             parent_asin,
             fields,
@@ -518,6 +525,43 @@ class AgentRetrievalTest(unittest.TestCase):
 
         self.assertTrue(CatalogSearch._constraint_sequence_match(matching, query))
         self.assertFalse(CatalogSearch._constraint_sequence_match(scattered, query))
+
+    def test_catalog_tiebreak_rewards_same_field_phrase_coherence(self) -> None:
+        store = ProductFeatureStore()
+        cohesive = self._features(
+            store,
+            "cohesive",
+            categories="Women Clothing Tunics",
+            features="60% polyester button closure hand wash only",
+        )
+        scattered = self._features(
+            store,
+            "scattered",
+            categories="Women Clothing Tunics",
+            title="60% polyester tunic",
+            features="button detail",
+            details="closure hand wash only",
+        )
+        query = store.compile_query([
+            Evidence("60% polyester", 3.3, "clarification", 2),
+            Evidence("button closure", 3.3, "clarification", 3),
+            Evidence("hand wash only", 3.3, "clarification", 3),
+        ])
+        frequency = {
+            token: sum(token in product.token_weights for product in (cohesive, scattered))
+            for token in set(cohesive.token_weights) | set(scattered.token_weights)
+        }
+
+        cohesive_score = CatalogSearch._catalog_tiebreak(
+            cohesive, query, "Clothing Tunics", frequency, 2
+        )
+        scattered_score = CatalogSearch._catalog_tiebreak(
+            scattered, query, "Clothing Tunics", frequency, 2
+        )
+
+        self.assertGreater(cohesive_score, scattered_score)
+        self.assertEqual(cohesive_score[1], 1.0)
+        self.assertLess(scattered_score[1], 1.0)
 
     def test_feature_cache_reuses_entries_and_evicts_least_recently_used(self) -> None:
         store = ProductFeatureStore(max_size=2)

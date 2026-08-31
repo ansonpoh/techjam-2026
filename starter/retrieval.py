@@ -16,6 +16,7 @@ from starter.constraint_index import (
 from starter.dialogue import Evidence, SessionState
 from starter.product_features import (
     BUDGET_RE,
+    FIELD_ORDER,
     FIELD_WEIGHTS,
     CompiledQuery,
     ProductFeatures,
@@ -373,7 +374,9 @@ class CatalogSearch:
         hard_constraint_exactness: dict[str, tuple[int, int]] = {}
         category_leaf_matches: dict[str, bool] = {}
         constraint_sequence_matches: dict[str, bool] = {}
+        catalog_tiebreaks: dict[str, tuple[float, float, int]] = {}
         exact_hard_matches: set[str] = set()
+        token_document_frequency = self._candidate_token_frequency(candidates.values())
         for parent_asin, product in candidates.items():
             features = product["_features"]
             needs_facets = policy.contradiction_penalty > 0.0 and any(
@@ -414,6 +417,13 @@ class CatalogSearch:
             )
             constraint_sequence_matches[parent_asin] = (
                 self._constraint_sequence_match(features, query)
+            )
+            catalog_tiebreaks[parent_asin] = self._catalog_tiebreak(
+                features,
+                query,
+                state.category_text,
+                token_document_frequency,
+                len(candidates),
             )
             if hard_constraint_count > 0 and exact_count == hard_constraint_count:
                 exact_hard_matches.add(parent_asin)
@@ -487,6 +497,7 @@ class CatalogSearch:
             -hard_constraint_exactness[item[0]][0],
             -int(category_leaf_matches[item[0]]),
             -int(constraint_sequence_matches[item[0]]),
+            tuple(-value for value in catalog_tiebreaks[item[0]]),
             -item[1],
             item[0],
         ))
@@ -501,6 +512,7 @@ class CatalogSearch:
             product["_constraint_sequence_match"] = (
                 constraint_sequence_matches[parent_asin]
             )
+            product["_catalog_tiebreak"] = catalog_tiebreaks[parent_asin]
             product["_exact_constraint_index_match"] = (
                 parent_asin in exact_constraint_matches
             )
@@ -700,6 +712,96 @@ class CatalogSearch:
             return False
         sequence = " ".join(token for chunk in chunks for token in chunk)
         return len(sequence.split()) >= 3 and sequence in product.normalized_text
+
+    @staticmethod
+    def _candidate_token_frequency(products: object) -> dict[str, int]:
+        """Count candidate documents, not occurrences, for rarity weighting."""
+        frequency: defaultdict[str, int] = defaultdict(int)
+        for product in products:
+            features = product.get("_features") if isinstance(product, dict) else None
+            if not isinstance(features, ProductFeatures):
+                continue
+            for token in features.token_weights:
+                frequency[token] += 1
+        return dict(frequency)
+
+    @staticmethod
+    def _catalog_tiebreak(
+        product: ProductFeatures,
+        query: CompiledQuery,
+        requested_category: str,
+        token_document_frequency: dict[str, int],
+        candidate_count: int,
+    ) -> tuple[float, float, int]:
+        """Return label-free field proximity, coherence, and taxonomy signals.
+
+        These intentionally sit below hard-constraint tiers. They resolve
+        catalog ambiguity before popularity can reward a merely well-reviewed
+        sibling whose matching words are scattered across unrelated fields.
+        """
+        active_chunks: list[tuple[str, ...]] = []
+        for item in query.evidence:
+            if item.source in {"category", "exclusion"} or item.is_budget:
+                continue
+            chunk = tuple(item.tokens)
+            if not chunk or chunk in active_chunks:
+                continue
+            if any(
+                len(chunk) < len(other)
+                and any(
+                    other[index:index + len(chunk)] == chunk
+                    for index in range(len(other) - len(chunk) + 1)
+                )
+                for other in (
+                    tuple(candidate.tokens)
+                    for candidate in query.evidence
+                    if candidate is not item and candidate.tokens
+                )
+            ):
+                continue
+            active_chunks.append(chunk)
+
+        field_score = 0.0
+        feature_matches = 0
+        feature_sequence = product.field_sequences[FIELD_ORDER.index("features")]
+        for chunk in active_chunks:
+            rarity = sum(
+                math.log1p(candidate_count / max(token_document_frequency.get(token, 1), 1))
+                for token in set(chunk)
+            ) / len(set(chunk))
+            best = 0.0
+            for sequence in product.field_sequences:
+                positions = [
+                    index for index in range(len(sequence) - len(chunk) + 1)
+                    if sequence[index:index + len(chunk)] == chunk
+                ]
+                if positions:
+                    best = max(best, rarity * (1.0 + min(len(chunk), 8) / 8.0))
+            field_score += best
+            if any(
+                feature_sequence[index:index + len(chunk)] == chunk
+                for index in range(len(feature_sequence) - len(chunk) + 1)
+            ):
+                feature_matches += 1
+
+        # Multiple independently disclosed chunks in the feature field are a
+        # stronger catalog-record match than the same words scattered across
+        # title, taxonomy, description, or details.
+        coherence = (
+            feature_matches / len(active_chunks)
+            if active_chunks
+            else 0.0
+        )
+        requested = tuple(terms(requested_category))
+        category = product.category_tokens
+        leaf_specificity = 0
+        if requested:
+            for width in range(1, len(requested) + 1):
+                if category[-width:] == requested[-width:]:
+                    leaf_specificity = width
+                else:
+                    break
+        return round(field_score, 9), round(coherence, 9), leaf_specificity
 
     @staticmethod
     def _constraint_score(product: ProductFeatures, query: CompiledQuery) -> float:

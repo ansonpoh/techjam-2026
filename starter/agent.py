@@ -9,6 +9,9 @@ from starter.retrieval import FEATURE_CACHE_SIZE, CatalogSearch
 from starter.vector_index import VectorIndex
 
 
+AMBIGUOUS_FIELD_SCORE_THRESHOLD = 2.0
+
+
 class Agent:
     """Deterministic conversational product-search agent."""
 
@@ -34,6 +37,7 @@ class Agent:
         )
         self.question_planner = AdaptiveQuestionPlanner(self.search.feature_store)
         self._sessions: dict[str, SessionState] = {}
+        self._ambiguity_deferred: set[str] = set()
         self.profile_store = UserProfileStore()
 
     def close(self) -> None:
@@ -43,6 +47,7 @@ class Agent:
         profile_id = str(user_profile.get("profile_id") or user_profile.get("user_id") or session_id)
         profile = self.profile_store.get(profile_id, user_profile)
         self._sessions[session_id] = SessionState(user_profile=user_profile, long_term_profile=profile)
+        self._ambiguity_deferred.discard(session_id)
 
     def export_profile(self, profile_id: str) -> dict | None:
         profile = self.profile_store.profiles.get(profile_id)
@@ -93,7 +98,34 @@ class Agent:
             clarification_expected_value=question_plan.expected_value,
             turns_remaining=max(0, 10 - turn),
         )
-        ranked = result.recommendations[:recommendation_limit]
+        # When the leading catalog records are observational siblings, their
+        # popularity score is not evidence that one satisfies the request
+        # better. Use the already-planned clarification before exposing an
+        # arbitrary sibling order; the next answer commonly supplies the rare
+        # feature phrase that disambiguates the records.
+        unresolved_siblings = (
+            recommendation_limit > 1
+            and session_id not in self._ambiguity_deferred
+            and turn < 9
+            and question_plan.attribute is not None
+            and len(result.candidates) >= 2
+            and float(
+                (result.candidates[0].get("_catalog_tiebreak") or (0.0,))[0]
+            ) < AMBIGUOUS_FIELD_SCORE_THRESHOLD
+            and result.candidates[0].get("_catalog_tiebreak")
+            == result.candidates[1].get("_catalog_tiebreak")
+            and result.candidates[0].get("_hard_constraint_exact_count")
+            == result.candidates[1].get("_hard_constraint_exact_count")
+            and result.candidates[0].get("_category_leaf_match")
+            == result.candidates[1].get("_category_leaf_match")
+        )
+        if unresolved_siblings:
+            self._ambiguity_deferred.add(session_id)
+        ranked = (
+            []
+            if unresolved_siblings
+            else result.recommendations[:recommendation_limit]
+        )
         return {
             "message": question_plan.message,
             "ask_attribute": question_plan.attribute,

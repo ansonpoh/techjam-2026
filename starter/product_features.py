@@ -91,6 +91,7 @@ class ProductFeatures:
     parent_asin: str
     token_weights: Mapping[str, float]
     normalized_text: str
+    field_sequences: tuple[tuple[str, ...], ...]
     feature_tokens: frozenset[str]
     category_tokens: tuple[str, ...]
     price: float | None
@@ -197,6 +198,7 @@ class ProductFeatureStore:
             parent_asin=parent_asin,
             token_weights=MappingProxyType(token_weights),
             normalized_text=FIELD_SEPARATOR.join(normalized_fields),
+            field_sequences=tuple(sequences[field] for field in FIELD_ORDER),
             feature_tokens=feature_tokens,
             category_tokens=category_tokens,
             price=_optional_float(price),
