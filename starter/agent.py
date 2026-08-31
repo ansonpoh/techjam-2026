@@ -97,6 +97,10 @@ class Agent:
             ),
             clarification_expected_value=question_plan.expected_value,
             turns_remaining=max(0, 10 - turn),
+            has_intent_override=any(
+                item.source == "override" for item in state.evidence
+            ),
+            has_no_preference_reply=bool(state.no_preference_attributes),
         )
         # When the leading catalog records are observational siblings, their
         # popularity score is not evidence that one satisfies the request

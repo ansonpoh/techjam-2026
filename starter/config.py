@@ -46,6 +46,8 @@ class RecommendationPolicy:
         has_answerable_clarification: bool = False,
         clarification_expected_value: float | None = None,
         turns_remaining: int | None = None,
+        has_intent_override: bool = False,
+        has_no_preference_reply: bool = False,
     ) -> int:
         requested = max(1, min(int(requested), 10))
         if not self.adaptive or requested == 1 or len(scores) < 2:
@@ -73,8 +75,15 @@ class RecommendationPolicy:
         # Once the useful clarification budget is exhausted, use the remaining
         # turns for recall. A numerical leader should not suppress alternatives
         # when there is no customer answer left that can validate that lead.
-        if not has_answerable_clarification and remaining <= 6:
-            return requested
+        if not has_answerable_clarification:
+            if (
+                turn == 3
+                and not has_intent_override
+                and not has_no_preference_reply
+            ):
+                return min(requested, self.low_value_width)
+            if remaining <= 6:
+                return requested
 
         # A decisive leader that satisfies the active must-haves does not gain
         # anything from displaying weaker alternatives.

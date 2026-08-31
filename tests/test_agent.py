@@ -874,6 +874,27 @@ class AgentRetrievalTest(unittest.TestCase):
         self.assertEqual(
             policy.limit_for(
                 3, 10, scores=ambiguous, has_answerable_clarification=True,
+                turns_remaining=7, has_intent_override=True,
+            ),
+            1,
+        )
+        self.assertEqual(
+            policy.limit_for(
+                3, 10, scores=ambiguous, has_answerable_clarification=True,
+                turns_remaining=7, has_no_preference_reply=True,
+            ),
+            1,
+        )
+        self.assertEqual(
+            policy.limit_for(
+                3, 10, scores=decisive, has_answerable_clarification=False,
+                turns_remaining=7,
+            ),
+            5,
+        )
+        self.assertEqual(
+            policy.limit_for(
+                3, 10, scores=ambiguous, has_answerable_clarification=True,
                 clarification_expected_value=0.05, turns_remaining=7,
             ),
             10,
