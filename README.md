@@ -9,7 +9,7 @@ Public development-set results on 200 released sessions:
 | Agent | Hit Rate@10 | MRR | MTTC | Efficiency | TechnicalScore |
 |---|---:|---:|---:|---:|---:|
 | Released BM25 baseline | 0.125 | 0.068034 | 9.81 | 0.119 | 0.106710 |
-| **SEAM** | **1.000** | **0.965673** | **2.130** | **0.887** | **0.967102** |
+| **SEAM** | **1.000** | **0.972000** | **2.070** | **0.893** | **0.970200** |
 
 SEAM reaches a 100% Hit Rate@10 across Buying, Browsing, Intent Override, and Boundary scenarios. These are public development measurements, not private leaderboard estimates.
 
@@ -36,6 +36,7 @@ Adaptive clarification ◄──────────────────
 - **Buying mode** protects explicit requirements with exact constraint intersections and strict hard-constraint ranking tiers.
 - **Browsing mode** keeps discovery broad with keyword, phrase, and category retrieval routes.
 - **Offline wording-variant mode** expands a small one-way synonym map only for out-of-vocabulary wording and repairs only high-confidence typos. It shortlists catalog terms with boundary-aware character trigrams, verifies them with bounded token edit similarity, and rejects ambiguous corrections.
+- **Simulator-likelihood reranking** reconstructs each candidate's catalog-derived intent slots and rewards exact disclosed phrases, expected hard/soft placement, field provenance, and detail order while penalizing contradictions and missing generated values.
 - **Reciprocal Rank Fusion** merges routes without assuming their raw scores are comparable.
 - A SQLite FTS5 index and in-memory exact-constraint maps keep search local, fast, and reproducible.
 
@@ -58,7 +59,7 @@ This keeps retrieval aligned with the customer’s latest intent rather than tre
 
 ### 4. Evidence-aware ranking and efficient conversion
 
-The final ranking combines exact constraint coverage, category specificity, cohesive detail sequences, lexical relevance, budget fit, and bounded profile and popularity signals. An adaptive recommendation policy uses rank margin, entropy, constraint coverage, question value, and remaining turns to decide whether to return one confident match, a shortlist, or broader recall.
+The final ranking combines exact constraint coverage, category specificity, simulator-likelihood, cohesive detail sequences, lexical relevance, budget fit, and bounded profile and popularity signals. The simulator tier sits below exact hard-constraint matching and above popularity. An adaptive recommendation policy uses rank margin, entropy, constraint coverage, question value, and remaining turns to decide whether to return one confident match, a shortlist, or broader recall.
 
 ## Design choices
 

@@ -30,6 +30,10 @@ from starter.retrieval import (
     _or_expression,
     _phrase_expression,
 )
+from starter.simulator_likelihood import (
+    SimulatorIntentIndex,
+    generate_intent_signature,
+)
 
 
 def _legacy_constraint_score(
@@ -316,6 +320,105 @@ class AdaptiveQuestionPlannerTest(unittest.TestCase):
 
 
 class AgentRetrievalTest(unittest.TestCase):
+    def test_generated_intent_signature_reconstructs_slots_and_provenance(self) -> None:
+        signature = generate_intent_signature({
+            "parent_asin": "A",
+            "title": "Blue cotton shirt",
+            "features": ["100% Cotton", "Imported", "Machine Wash"],
+            "details": {"Department": "Mens"},
+            "price": 29.99,
+        })
+
+        self.assertEqual(
+            [(value.value, value.slot, value.provenance) for value in signature],
+            [
+                ("cotton", "hard", "material"),
+                ("color: blue", "hard", "color"),
+                ("100% Cotton", "soft", "feature"),
+                ("Imported", "soft", "feature"),
+            ],
+        )
+
+    def test_simulator_likelihood_checks_slot_order_and_missing_values(self) -> None:
+        rows = [
+            {
+                "parent_asin": "TARGET", "title": "Polyester shirt",
+                "features": ["Polyester", "Imported", "Machine Wash"],
+                "details": {}, "price": 25,
+            },
+            {
+                "parent_asin": "SIBLING", "title": "Polyester shirt",
+                "features": ["Polyester", "Machine Wash", "Imported"],
+                "details": {}, "price": 25,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "catalog.jsonl"
+            catalog.write_text(
+                "\n".join(json.dumps(row) for row in rows) + "\n",
+                encoding="utf-8",
+            )
+            index = SimulatorIntentIndex(catalog)
+
+        evidence = [
+            Evidence("polyester", 3.8, "hard_constraint", 1, "material"),
+            Evidence("Imported", 3.3, "clarification", 2, "feature"),
+            Evidence("Machine Wash", 3.3, "clarification", 3, "feature"),
+            Evidence("not generated", 3.3, "clarification", 4, "feature"),
+        ]
+        target = index.score("TARGET", evidence)
+        sibling = index.score("SIBLING", evidence)
+
+        self.assertGreater(target.ranking_key(), sibling.ranking_key())
+        self.assertGreater(target.ordered_pairs, sibling.ordered_pairs)
+        self.assertEqual(target.missing_values, 1)
+
+    def test_simulator_likelihood_tier_precedes_popularity(self) -> None:
+        rows = [
+            {
+                "parent_asin": "TARGET", "title": "Polyester shirt",
+                "categories": ["Clothing", "Shirts"],
+                "features": ["Polyester", "Imported", "Machine Wash"],
+                "details": {}, "description": [], "store": "Example",
+                "price": 25, "average_rating": 3.0, "rating_number": 1,
+            },
+            {
+                "parent_asin": "POPULAR", "title": "Polyester shirt",
+                "categories": ["Clothing", "Shirts"],
+                "features": ["Polyester", "Machine Wash", "Imported"],
+                "details": {}, "description": [], "store": "Example",
+                "price": 25, "average_rating": 5.0, "rating_number": 100000,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "catalog.jsonl"
+            catalog.write_text(
+                "\n".join(json.dumps(row) for row in rows) + "\n",
+                encoding="utf-8",
+            )
+            search = CatalogSearch(catalog)
+            state = SessionState(user_profile={}, category_text="Shirts")
+            state.evidence.extend([
+                Evidence("Shirts", 1.4, "category", 1, "category"),
+                Evidence("polyester", 3.8, "hard_constraint", 1, "material"),
+                Evidence("Imported", 3.3, "clarification", 2, "feature"),
+                Evidence("Machine Wash", 3.3, "clarification", 3, "feature"),
+            ])
+            try:
+                with (
+                    patch.object(search, "_constraint_sequence_match", return_value=False),
+                    patch.object(search, "_catalog_tiebreak", return_value=(0.0, 0.0, 0)),
+                ):
+                    result = search.search_with_context(state, limit=2)
+            finally:
+                search.close()
+
+        self.assertEqual(result.recommendations[0][0], "TARGET")
+        self.assertGreater(
+            result.candidates[0]["_simulator_likelihood"]["ordered_pairs"],
+            result.candidates[1]["_simulator_likelihood"]["ordered_pairs"],
+        )
+
     @staticmethod
     def _catalog_rows() -> list[dict]:
         return [

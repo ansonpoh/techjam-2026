@@ -3,10 +3,10 @@
   "dataset": "data/public_set.jsonl",
   "sample_count": 200,
   "hit_rate_at_10": 1.0,
-  "mrr": 0.963173,
-  "mttc": 2.12,
-  "efficiency": 0.888,
-  "technical_score": 0.966552,
+  "mrr": 0.972,
+  "mttc": 2.07,
+  "efficiency": 0.893,
+  "technical_score": 0.9702,
   "development_benchmark": {
     "python": "3.13.5",
     "index_build_seconds": 3.89,
@@ -22,9 +22,9 @@
     "total_tokens": 0
   },
   "scenario_metrics": {
-    "boundary": {"sample_count": 10, "hit_rate_at_10": 1.0, "mrr": 1.0, "mttc": 2.6},
-    "browsing": {"sample_count": 80, "hit_rate_at_10": 1.0, "mrr": 0.9625, "mttc": 1.975},
-    "buying": {"sample_count": 80, "hit_rate_at_10": 1.0, "mrr": 0.962396, "mttc": 1.625},
-    "intent_override": {"sample_count": 30, "hit_rate_at_10": 1.0, "mrr": 0.954762, "mttc": 3.666667}
+    "boundary": {"sample_count": 10, "hit_rate_at_10": 1.0, "mrr": 1.0, "mttc": 2.8},
+    "browsing": {"sample_count": 80, "hit_rate_at_10": 1.0, "mrr": 0.96875, "mttc": 1.9},
+    "buying": {"sample_count": 80, "hit_rate_at_10": 1.0, "mrr": 0.971667, "mttc": 1.5375},
+    "intent_override": {"sample_count": 30, "hit_rate_at_10": 1.0, "mrr": 0.972222, "mttc": 3.7}
   }
 }

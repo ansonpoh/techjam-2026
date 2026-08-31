@@ -32,6 +32,7 @@ from starter.ranking import (
     RankingPolicies,
     RankingPolicy,
 )
+from starter.simulator_likelihood import SimulatorIntentIndex, SimulatorLikelihood
 from starter.vector_index import CatalogVectorIndex, VectorIndex
 
 
@@ -150,6 +151,7 @@ class CatalogSearch:
         self.feature_store = ProductFeatureStore(max_size=feature_cache_size)
         self.ranking_policies = ranking_policies
         self.intent_router = intent_router or IntentRouter()
+        self.simulator_intent_index = SimulatorIntentIndex(self.catalog_path)
         self.catalog_index_path = (
             Path(catalog_index_path)
             if catalog_index_path is not None
@@ -392,6 +394,7 @@ class CatalogSearch:
         hard_constraint_exactness: dict[str, tuple[int, int]] = {}
         category_leaf_matches: dict[str, bool] = {}
         constraint_sequence_matches: dict[str, bool] = {}
+        simulator_likelihoods: dict[str, SimulatorLikelihood] = {}
         catalog_tiebreaks: dict[str, tuple[float, float, int]] = {}
         offline_variant_matches: dict[str, int] = {}
         exact_hard_matches: set[str] = set()
@@ -440,6 +443,9 @@ class CatalogSearch:
             )
             constraint_sequence_matches[parent_asin] = (
                 self._constraint_sequence_match(features, query)
+            )
+            simulator_likelihoods[parent_asin] = self.simulator_intent_index.score(
+                parent_asin, state.evidence
             )
             catalog_tiebreaks[parent_asin] = self._catalog_tiebreak(
                 features,
@@ -525,6 +531,7 @@ class CatalogSearch:
             ),
             -hard_constraint_exactness[item[0]][0],
             -int(category_leaf_matches[item[0]]),
+            tuple(-value for value in simulator_likelihoods[item[0]].ranking_key()),
             -offline_variant_matches[item[0]],
             -int(constraint_sequence_matches[item[0]]),
             tuple(-value for value in catalog_tiebreaks[item[0]]),
@@ -539,6 +546,15 @@ class CatalogSearch:
             product["_hard_constraint_exact_count"] = exact_count
             product["_hard_constraint_count"] = hard_count
             product["_category_leaf_match"] = category_leaf_matches[parent_asin]
+            product["_simulator_likelihood"] = {
+                "ranking_key": simulator_likelihoods[parent_asin].ranking_key(),
+                "contradictions": simulator_likelihoods[parent_asin].contradictions,
+                "phrase_matches": simulator_likelihoods[parent_asin].phrase_matches,
+                "slot_matches": simulator_likelihoods[parent_asin].slot_matches,
+                "provenance_matches": simulator_likelihoods[parent_asin].provenance_matches,
+                "ordered_pairs": simulator_likelihoods[parent_asin].ordered_pairs,
+                "missing_values": simulator_likelihoods[parent_asin].missing_values,
+            }
             product["_constraint_sequence_match"] = (
                 constraint_sequence_matches[parent_asin]
             )
