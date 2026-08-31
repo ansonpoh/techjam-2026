@@ -152,7 +152,7 @@ Only exact `parent_asin` equality is scored.
 |---|---|
 | Naren | _Add contribution_ |
 | Anson | _Add contribution_ |
-| Joseph | _Add contribution_ |
+| Joseph | _Contributed to Runtime Adaptation by leveraging accumulated dialog history to perform Personalized Context Distillation, continuously updating short-term session states and long-term user profiles._ |
 | Harry | _Add contribution_ |
 
 ## Repository map
