@@ -14,6 +14,7 @@ from starter.constraint_index import (
     open_catalog_index,
 )
 from starter.dialogue import Evidence, SessionState
+from starter.offline_variants import OfflineVariantMatcher, VariantRewrite
 from starter.product_features import (
     BUDGET_RE,
     FIELD_ORDER,
@@ -50,6 +51,7 @@ BROAD_OR_ROUTE_WEIGHT = 1.0
 PHRASE_ROUTE_WEIGHT = 1.0
 CATEGORY_ROUTE_WEIGHT = 1.0
 HARD_CONSTRAINT_AND_ROUTE_WEIGHT = 3.0
+OFFLINE_VARIANT_ROUTE_WEIGHT = 0.75
 
 # FTS5 column order: parent_asin, title, categories, features, details, store,
 # description, price, average_rating, rating_number.
@@ -174,6 +176,7 @@ class CatalogSearch:
             self._row_id_by_asin: dict[str, int] = {}
             self._build_index()
         self.vector_index = vector_index
+        self.offline_variant_matcher = OfflineVariantMatcher(self.connection)
         if self.vector_index is None and enable_vector_reranker:
             self.vector_index = CatalogVectorIndex(self.catalog_path)
 
@@ -341,6 +344,21 @@ class CatalogSearch:
             _or_expression([item.text for item in positive_evidence]), 350
         )))
 
+        variant_rewrite = self.offline_variant_matcher.rewrite(
+            item.text for item in positive_evidence
+        )
+        if variant_rewrite.changed:
+            variant_tokens = [
+                *variant_rewrite.synonym_tokens,
+                *(replacement for _, replacement in variant_rewrite.fuzzy_tokens),
+            ]
+            variant_route = self._route(
+                " OR ".join(f'"{token}"' for token in variant_tokens),
+                250,
+            )
+            if variant_route:
+                routes.append((OFFLINE_VARIANT_ROUTE_WEIGHT, variant_route))
+
         latest = state.latest_evidence
         if latest is not None:
             phrase_route = self._route(_phrase_expression(positive_evidence), 180)
@@ -375,7 +393,12 @@ class CatalogSearch:
         category_leaf_matches: dict[str, bool] = {}
         constraint_sequence_matches: dict[str, bool] = {}
         catalog_tiebreaks: dict[str, tuple[float, float, int]] = {}
+        offline_variant_matches: dict[str, int] = {}
         exact_hard_matches: set[str] = set()
+        normalized_variant_tokens = {
+            *variant_rewrite.synonym_tokens,
+            *(replacement for _, replacement in variant_rewrite.fuzzy_tokens),
+        }
         token_document_frequency = self._candidate_token_frequency(candidates.values())
         for parent_asin, product in candidates.items():
             features = product["_features"]
@@ -424,6 +447,9 @@ class CatalogSearch:
                 state.category_text,
                 token_document_frequency,
                 len(candidates),
+            )
+            offline_variant_matches[parent_asin] = sum(
+                token in features.token_weights for token in normalized_variant_tokens
             )
             if hard_constraint_count > 0 and exact_count == hard_constraint_count:
                 exact_hard_matches.add(parent_asin)
@@ -483,6 +509,9 @@ class CatalogSearch:
             candidates[parent_asin]["_vector_score"] = similarity
             candidates[parent_asin]["_vector_contribution"] = contribution
             candidates[parent_asin]["_ranking_mode"] = routing.mode.value
+            candidates[parent_asin]["_offline_variant_rewrite"] = (
+                self._variant_debug(variant_rewrite)
+            )
             ranked.append((parent_asin, base_score + contribution))
         # Exact hard-constraint coverage defines explicit ranking tiers. The
         # requested leaf category and a cohesive sequence of disclosed details
@@ -496,6 +525,7 @@ class CatalogSearch:
             ),
             -hard_constraint_exactness[item[0]][0],
             -int(category_leaf_matches[item[0]]),
+            -offline_variant_matches[item[0]],
             -int(constraint_sequence_matches[item[0]]),
             tuple(-value for value in catalog_tiebreaks[item[0]]),
             -item[1],
@@ -516,6 +546,7 @@ class CatalogSearch:
             product["_exact_constraint_index_match"] = (
                 parent_asin in exact_constraint_matches
             )
+            product["_offline_variant_match_count"] = offline_variant_matches[parent_asin]
             context.append(product)
         return SearchResult(
             recommendations=ranked[:limit],
@@ -523,6 +554,14 @@ class CatalogSearch:
             prompt_tokens=vector_prompt_tokens,
             ranking_mode=routing.mode,
         )
+
+    @staticmethod
+    def _variant_debug(rewrite: VariantRewrite) -> dict[str, object]:
+        return {
+            "changed": rewrite.changed,
+            "synonyms": rewrite.synonym_tokens,
+            "fuzzy": rewrite.fuzzy_tokens,
+        }
 
     @staticmethod
     def _constraint_fit_adjustment(

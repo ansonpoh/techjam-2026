@@ -35,6 +35,7 @@ Adaptive clarification ◄──────────────────
 
 - **Buying mode** protects explicit requirements with exact constraint intersections and strict hard-constraint ranking tiers.
 - **Browsing mode** keeps discovery broad with keyword, phrase, and category retrieval routes.
+- **Offline wording-variant mode** expands a small one-way synonym map only for out-of-vocabulary wording and repairs only high-confidence typos. It shortlists catalog terms with boundary-aware character trigrams, verifies them with bounded token edit similarity, and rejects ambiguous corrections.
 - **Reciprocal Rank Fusion** merges routes without assuming their raw scores are comparable.
 - A SQLite FTS5 index and in-memory exact-constraint maps keep search local, fast, and reproducible.
 
