@@ -146,6 +146,15 @@ Only exact `parent_asin` equality is scored.
 - Some catalog siblings share the same disclosed metadata, making the exact purchased parent ASIN intrinsically ambiguous.
 - The catalog is static, text-only, and limited to Clothing, Shoes & Jewelry.
 
+## Contributions
+
+| Name | Contribution |
+|---|---|
+| Naren | _Add contribution_ |
+| Anson | _Add contribution_ |
+| Joseph | _Add contribution_ |
+| Harry | _Add contribution_ |
+
 ## Repository map
 
 ```text
