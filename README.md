@@ -153,7 +153,7 @@ Only exact `parent_asin` equality is scored.
 | Naren | _Built SEAM’s core stateful conversational agent, including dialogue memory, dynamic context updates, adaptive clarification planning, multi-route retrieval, diagnostics and regression tests. Optimised retrieval with bounded feature caching; implemented intent-aware Buying/Browsing ranking and calibration tooling; and evaluated the vector route before selecting the higher-scoring lexical path._ |
 | Anson | _Led the development and optimisation of SEAM’s offline conversational product-search engine, implementing constraint-aware retrieval, adaptive ranking, confidence-driven recommendations, dynamic clarification planning, a preprocessed catalogue index and built extensive evaluation and testing infrastructure._ |
 | Joseph | _Contributed to Runtime Adaptation by leveraging accumulated dialog history to perform Personalized Context Distillation, continuously updating short-term session states and long-term user profiles._ |
-| Harry | _Add contribution_ |
+| Harry | _Implemented incremental dialogue-slot extraction and intent-override handling, including the initial LLM extraction integration and its test coverage._ |
 
 ## Repository map
 
